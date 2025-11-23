@@ -356,7 +356,7 @@ local function awaitArrival(targetCF, hrp)
     return false
 end
 
--- ================== MAIN: TP + drop + auto reset ==================
+-- ================== MAIN: TP + CHỈ DROP KHI ĐÃ TỚI + auto reset ==================
 local function doTpDropAndDie()
     local inst, bestVal = findStrongestPet()
     if not inst then
@@ -372,7 +372,7 @@ local function doTpDropAndDie()
         return
     end
 
-    local cf = part.CFrame
+    local targetCF = part.CFrame
 
     local char = LP.Character or LP.CharacterAdded:Wait()
     local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -382,16 +382,24 @@ local function doTpDropAndDie()
         return
     end
 
-    -- 1) TP bằng remote + hỗ trợ CFrame client
-    fireTeleport(cf)
-    hrp.CFrame = cf + Vector3.new(0, 3, 0)
+    -- 1) Gửi remote TP (không drop gì ở đây hết)
+    fireTeleport(targetCF)
 
-    -- 2) Đợi tới khi server thực sự đưa bạn tới gần podium
-    awaitArrival(cf, hrp)
+    -- 2) ĐỢI THẬT SỰ ĐẾN GẦN PODIUM (nếu không tới được thì bỏ luôn, KHÔNG drop)
+    local arrived = awaitArrival(targetCF, hrp)
+    if not arrived then
+        warn("[BrainrotTP] Không tới được podium → hủy, không drop clone.")
+        return
+    end
 
-    -- 3) Spam UseItem 1 đoạn ngắn cho clone rơi
+    -- 3) Khi đã tới rồi, chỉnh nhẹ vị trí cho đứng trên podium
+    local upPos = targetCF.Position + Vector3.new(0, 3, 0)
+    hrp.CFrame = CFrame.new(upPos, upPos + hrp.CFrame.LookVector)
+
+    -- 4) Spam UseItem trong thời gian ngắn (0.18–0.45s tùy ping)
     local start = os.clock()
-    local duration = math.clamp(getPingSec() * 1.2, 0.25, 0.6)
+    local duration = math.clamp(getPingSec() * 0.9, 0.18, 0.45)
+
     while os.clock() - start < duration do
         fireUseItem()
         RunService.Heartbeat:Wait()
@@ -399,19 +407,15 @@ local function doTpDropAndDie()
             break
         end
     end
+
+    -- 5) Thêm 1 phát dự phòng
     if not cloneExists() then
         fireUseItem()
     end
 
-    -- 4) Auto reset ngay sau khi drop
+    -- 6) Reset sau khi drop
+    task.wait(0.05)
     hum.Health = 0
-end
-
-local function tpAndDropClone()
-    if not notCoolingDown(2.5) then
-        return
-    end
-    task.spawn(doTpDropAndDie)
 end
 
 -- ================== Keybind T + CAS button ==================
