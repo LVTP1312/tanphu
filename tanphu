@@ -1,5 +1,5 @@
 -- Strongest Value TP + Drop Clone (Press T or tap CLONE)
--- Dùng cho PC + mobile (Delta)
+-- PC + mobile (Delta)
 -- Loader: loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
 local Pl = game:GetService("Players")
@@ -9,6 +9,7 @@ local CAS = game:GetService("ContextActionService")
 local RunS = game:GetService("RunService")
 local Stats = game:GetService("Stats")
 local LP = Pl.LocalPlayer
+local Mouse = LP:GetMouse()
 
 local GLOBAL_MIN_VALUE = 0
 local GLOBAL_MAX_VALUE = math.huge
@@ -240,6 +241,7 @@ end
 
 local last = 0
 
+-- ========= MAIN GO (AUTO + FALLBACK MOUSE.TARGET) =========
 local function go()
     local now = os.clock()
     if now - last < 3 then return end
@@ -247,12 +249,21 @@ local function go()
 
     print("[StrongTP] Scan starting...")
     local inst, val = findBest()
-    if not inst then
-        print("[StrongTP] Không tìm thấy object nào có số để bám vào (value = 0 hết).")
-        return
-    end
 
-    print("[StrongTP] Target:", inst:GetFullName(), "Val:", val)
+    if not inst then
+        -- fallback: dùng object dưới chuột
+        local t = Mouse and Mouse.Target
+        if t then
+            print("[StrongTP] Auto không tìm được, fallback Mouse.Target:", t:GetFullName())
+            inst = t
+            val = 0
+        else
+            print("[StrongTP] Không tìm được object nào và Mouse.Target = nil.")
+            return
+        end
+    else
+        print("[StrongTP] Target(auto):", inst:GetFullName(), "Val:", val)
+    end
 
     local part = pickPart(inst)
     if not part then
@@ -263,6 +274,7 @@ local function go()
     local cf = part.CFrame
     local char = LP.Character or LP.CharacterAdded:Wait()
     local hrp = char:WaitForChild("HumanoidRootPart")
+
     onTp(cf)
     hrp.CFrame = cf + Vector3.new(0, 3, 0)
     task.wait(getPing() * 1.5 + 0.2)
