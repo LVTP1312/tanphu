@@ -1,4 +1,4 @@
--- Brainrot Strongest TP + Drop Clone (AUTO từ AnimalPodiums, Press T / CLONE)
+-- Brainrot Strongest TP + Drop Clone (AUTO từ AnimalPodiums, spam drop nhanh)
 -- Loader (Delta):
 -- loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
@@ -28,7 +28,7 @@ local function parseMPS(val)
         return 0
     end
     local s = val:lower()
-    s = s:gsub(",", ""):gsub("%s+", "")
+    s = s:gsub(",", ""):gsub("%s+", ""):gsub("%$", "")
     local num = tonumber((s:match("([%d%.]+)")) or "0") or 0
     if s:find("b") then
         num = num * 1e9
@@ -195,7 +195,7 @@ local function findBestFromAnimalPodiums()
     return bestInst, bestVal
 end
 
--- Fallback: scan toàn workspace (ít dùng, chỉ dự phòng)
+-- Fallback: scan toàn workspace (dự phòng)
 local function findBestFromWorkspace()
     local bestInst, bestVal = nil, 0
     local ok, descs = pcall(workspace.GetDescendants, workspace)
@@ -323,7 +323,7 @@ end
 local fireTeleport, _via = getOnTeleport()
 local fireUseItem = getUseItem()
 
--- ================== Ping-aware arrival wait ==================
+-- ================== Ping + debounce + clone check ==================
 local function getPingSec()
     local ok, ms = pcall(function()
         local s = Stats.Network.ServerStatsItem["Data Ping"]:GetValueString()
@@ -331,28 +331,9 @@ local function getPingSec()
         return num
     end)
     local msPing = ok and ms or 120
-    return (msPing / 1000) * 1.2
+    return (msPing / 1000)
 end
 
-local function awaitArrival(targetCF, hrp, maxExtraSec)
-    local deadline = os.clock()
-        + math.clamp(getPingSec() * 3 + (maxExtraSec or 0.25), 0.2, 2.5)
-    while os.clock() < deadline do
-        if hrp and targetCF then
-            local dist = (hrp.Position - targetCF.Position).Magnitude
-            if dist <= 4 then
-                RunService.Heartbeat:Wait()
-                RunService.Heartbeat:Wait()
-                RunService.RenderStepped:Wait()
-                return true
-            end
-        end
-        RunService.Heartbeat:Wait()
-    end
-    return false
-end
-
--- ================== Debounce + clone check ==================
 local lastCall = 0
 local function notCoolingDown(cd)
     local now = os.clock()
@@ -367,7 +348,7 @@ local function cloneExists()
     return workspace:FindFirstChild(("%s_Clone"):format(LP.UserId)) ~= nil
 end
 
--- ================== MAIN ACTION ==================
+-- ================== MAIN ACTION (TP + SPAM DROP CỰC SỚM) ==================
 local function doTpAndDrop()
     local inst, bestVal = findStrongestPet()
     if not inst then
@@ -387,24 +368,36 @@ local function doTpAndDrop()
 
     local char = LP.Character or LP.CharacterAdded:Wait()
     local hrp = char:FindFirstChild("HumanoidRootPart")
+
+    -- TP bằng remote (server) + ép CFrame client
     fireTeleport(cf)
     if hrp then
         hrp.CFrame = cf + Vector3.new(0, 3, 0)
     end
 
-    awaitArrival(cf, hrp, 0.25)
+    -- ⚡ SPAM DROP NGAY SAU TELEPORT
+    local start = os.clock()
+    local duration = math.clamp(getPingSec() * 1.2, 0.4, 1.0)
+    local dropped = false
 
-    fireUseItem()
-
-    local t0 = os.clock()
-    while (os.clock() - t0) < 0.6 do
-        if cloneExists() then
-            return
+    while os.clock() - start < duration do
+        if hrp then
+            -- giữ nhân vật dính chặt vị trí target để hạn chế giựt về
+            hrp.CFrame = cf + Vector3.new(0, 3, 0)
         end
+
+        fireUseItem() -- drop clone liên tục
         RunService.Heartbeat:Wait()
+
+        if cloneExists() then
+            dropped = true
+            break
+        end
     end
-    if not cloneExists() then
-        task.wait(0.15 + getPingSec())
+
+    -- nếu vẫn chưa có clone, bắn thêm 1 phát nữa sau 1 chút
+    if not dropped then
+        task.wait(getPingSec() * 0.8)
         fireUseItem()
     end
 end
@@ -449,4 +442,4 @@ ContextActionService:BindAction(
 ContextActionService:SetTitle("BrainrotStrongTP", "CLONE")
 ContextActionService:SetPosition("BrainrotStrongTP", UDim2.new(1, -120, 1, -150))
 
-print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới AnimalPodium có MPS cao nhất rồi thả clone.")
+print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới AnimalPodium MPS cao nhất và spam drop clone nhanh.")
