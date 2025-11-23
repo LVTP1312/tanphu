@@ -26,13 +26,15 @@ PROXY_USER = "user26235"
 PROXY_PASS = "1758360642"
 PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
 
-# ====== LEASE POLICY ======
+# ====== LEASE/RESERVE POLICY ======
 LEASE_TTL = 60            # giây: hết hạn giữ chỗ nếu client treo
+DISPATCH_RATIO = 2        # 2 job fresh : 1 job reserve
 RESCAN_COOLDOWN = 3       # giây: cho phép quét bù nếu /next gọi lúc hết hàng
-# ==========================
+# ==================================
 
 # =================== STATE ===================
-job_queue = deque()                      # chỉ fresh jobs
+job_queue = deque()                      # fresh jobs (ưu tiên)
+recent_jobs = deque(maxlen=5000)         # reserve kho dự phòng
 assigned_jobs = set()                    # đang được giữ bởi client
 leases = {}                              # jid -> expire_ts
 
@@ -42,8 +44,10 @@ queue_lock = asyncio.Lock()
 last_scan_time = 0
 next_scan_time = 0
 scan_counter = 0
+dispatch_counter = 0
 
 skip_count = 0
+# last_public_ids = set()   # KHÔNG còn dùng để xoá PRIVATE nữa
 
 
 # =================== CLEAR ===================
@@ -52,9 +56,10 @@ def clear_console():
 
 
 # =================== FETCH SERVERS (multi-page) ===================
-# LẤY TẤT CẢ SERVER >=1 PLAYER, ƯU TIÊN SERVER ĐÔNG NGƯỜI (TOP 5 LOG RA)
+# ƯU TIÊN server 2–8 player, nhưng nếu KHÔNG CÓ thì fallback sang server khác (>=1 player, không full)
 async def fetch_servers(max_count=MAX_SERVERS):
-    servers = []
+    preferred = []  # 2–8 player
+    others = []     # còn lại (>=1, không full)
     cursor = None
     fetched = 0
     headers = {"User-Agent": "CTHub-Scanner/1.0"}
@@ -65,7 +70,7 @@ async def fetch_servers(max_count=MAX_SERVERS):
         proxy=PROXY_URL,
         headers=headers
     ) as client:
-        while len(servers) < max_count:
+        while len(preferred) < max_count and len(others) < max_count:
             url = ROBLOX_API.format(PLACE_ID)
             if cursor:
                 url += f"&cursor={cursor}"
@@ -87,40 +92,54 @@ async def fetch_servers(max_count=MAX_SERVERS):
                     continue
 
                 playing = int(s.get("playing", 0) or 0)
+                max_players = int(s.get("maxPlayers", 0) or 0)
 
                 # bỏ server 0 player
                 if playing <= 0:
                     continue
 
-                servers.append({"id": jid, "playing": playing})
+                # bỏ server full
+                if max_players and playing >= max_players:
+                    continue
 
-                if len(servers) >= max_count:
+                entry = {"id": jid, "playing": playing}
+
+                if 2 <= playing <= 8:
+                    preferred.append(entry)
+                else:
+                    others.append(entry)
+
+                # dừng khi đủ max_count ở 1 trong 2 list
+                if len(preferred) >= max_count or len(others) >= max_count:
                     break
-
-            if len(servers) >= max_count:
-                break
 
             cursor = data.get("nextPageCursor")
             if not cursor:
                 break
 
-    if not servers:
-        print("⚠️ fetch_servers: KHÔNG có server nào (>=1 player).")
-        return []
+    # chọn list nào để dùng
+    if preferred:
+        servers = preferred
+        print(
+            f"✅ fetch_servers: ƯU TIÊN {len(servers)} server 2–8 player "
+            f"(min={min(s['playing'] for s in servers)}, max={max(s['playing'] for s in servers)})"
+        )
+    else:
+        servers = others
+        if servers:
+            print(
+                f"⚠️ fetch_servers: KHÔNG có server 2–8 player, dùng {len(servers)} server khác "
+                f"(min={min(s['playing'] for s in servers)}, max={max(s['playing'] for s in servers)})"
+            )
+        else:
+            print("⚠️ fetch_servers: KHÔNG có server phù hợp nào (>=1 player, không full).")
 
-    # sort nhiều người → ít người
-    servers.sort(key=lambda s: s["playing"], reverse=True)
-
-    top5 = servers[:5]
-    print(
-        f"✅ fetch_servers: lấy {len(servers)} server (>=1 player). "
-        f"Top 5 server ĐÔNG người: {[s['playing'] for s in top5]}"
-    )
-
+    # sort ít người → nhiều người
+    servers.sort(key=lambda s: s["playing"])
     return servers
 
 
-# =================== SWEEPER (chỉ clear lease, KHÔNG requeue) ===================
+# =================== SWEEPER (requeue lease hết hạn) ===================
 async def sweep_expired_leases():
     now = time.time()
     expired = [jid for jid, exp in list(leases.items()) if exp <= now]
@@ -128,12 +147,16 @@ async def sweep_expired_leases():
         return
 
     async with queue_lock:
+        requeued = 0
         for jid in expired:
             leases.pop(jid, None)
             assigned_jobs.discard(jid)
+            if jid not in job_queue and jid not in recent_jobs:
+                job_queue.appendleft(jid)
+                requeued += 1
 
-    if expired:
-        print(f"♻️ Clear {len(expired)} job hết hạn lease (KHÔNG tái sử dụng).")
+    if requeued:
+        print(f"♻️ Requeue {requeued} job hết hạn lease → fresh={len(job_queue)}")
 
 
 # =================== UPDATE QUEUE — SCAN ===================
@@ -143,16 +166,12 @@ async def update_queue():
     scan_counter += 1
     new_servers = await fetch_servers(MAX_SERVERS)
 
+    count_new = 0
     async with queue_lock:
-        # 🔥 XOÁ TOÀN BỘ FRESH CŨ, KHÔNG CỘNG DỒN
-        old_count = len(job_queue)
-        job_queue.clear()
-
-        count_new = 0
-        # chỉ thêm job MỚI không trùng với assigned hiện tại
-        for s in reversed(new_servers):  # new_servers đã sort nhiều→ít
+        # Đưa job mới lên đầu, bỏ trùng
+        for s in reversed(new_servers):  # new_servers đã sort ít→nhiều
             jid = s["id"]
-            if jid in assigned_jobs:
+            if jid in assigned_jobs or jid in recent_jobs or jid in job_queue:
                 continue
             job_queue.appendleft(jid)
             count_new += 1
@@ -162,11 +181,11 @@ async def update_queue():
 
     now = datetime.now().strftime("%H:%M:%S")
     print((
-        "🔄 Scan #{0} | Xoá {3} job cũ, Thêm {1} server mới lúc {2}"
+        "🔄 Scan #{0} | Thêm {1} server mới lúc {2}"
         if count_new > 0 else
-        "⚠️ Scan #{0} | Xoá {3} job cũ, Không có server mới lúc {2}"
-    ).format(scan_counter, count_new, now, old_count))
-    print(f"📦 Fresh: {len(job_queue)}\n")
+        "⚠️ Scan #{0} | Không có server mới lúc {2}"
+    ).format(scan_counter, count_new, now))
+    print(f"📦 Fresh: {len(job_queue)} | Reserve: {len(recent_jobs)}\n")
 
 
 # =================== TIMER ===================
@@ -190,30 +209,41 @@ async def handle_next(request):
     client = request.remote or "unknown"
     client_stats[client] += 1
 
-    # Lần 1: lấy từ queue hiện tại
     async with queue_lock:
-        jid = None
-        source = "fresh"
+        global dispatch_counter
+        dispatch_counter += 1
+        pick_from_reserve = (dispatch_counter % (DISPATCH_RATIO + 1) == 0)
 
-        if job_queue:
+        jid = None
+        source = None
+
+        if pick_from_reserve and recent_jobs:
+            jid = recent_jobs.popleft()
+            source = "FALLBACK"
+        elif job_queue:
             jid = job_queue.popleft()
+            recent_jobs.append(jid)
+            source = "fresh"
+        elif recent_jobs:
+            jid = recent_jobs.popleft()
+            source = "FALLBACK"
 
         if jid:
             assigned_jobs.add(jid)
             leases[jid] = time.time() + LEASE_TTL
-            print(f"{client} → {jid} | {source} | fresh={len(job_queue)}")
+            print(f"{client} → {jid} | {source} | fresh={len(job_queue)} reserve={len(recent_jobs)}")
             try:
-                return web.json_response(
-                    {"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())}
-                )
+                return web.json_response({"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())})
             except (ConnectionResetError, asyncio.CancelledError, BrokenPipeError):
-                # client disconnect: CHỈ clear, KHÔNG requeue job
                 leases.pop(jid, None)
                 assigned_jobs.discard(jid)
-                print(f"⚠️ {client} disconnect → drop {jid}")
+                if source == "fresh":
+                    job_queue.appendleft(jid)
+                else:
+                    recent_jobs.appendleft(jid)
+                print(f"⚠️ {client} disconnect → requeue {jid}")
                 raise
 
-    # Hết hàng → thử quick-rescan
     await sweep_expired_leases()
     if time.time() - last_scan_time >= RESCAN_COOLDOWN:
         try:
@@ -221,13 +251,17 @@ async def handle_next(request):
         except Exception as e:
             print(f"⚠️ quick-rescan error: {e}")
 
-    # Lần 2: thử lấy lại sau quick-rescan
     async with queue_lock:
         jid = None
-        source = "fresh"
+        source = None
 
         if job_queue:
             jid = job_queue.popleft()
+            recent_jobs.append(jid)
+            source = "fresh"
+        elif recent_jobs:
+            jid = recent_jobs.popleft()
+            source = "FALLBACK"
         else:
             return web.json_response({
                 "jobId": None,
@@ -236,10 +270,8 @@ async def handle_next(request):
 
         assigned_jobs.add(jid)
         leases[jid] = time.time() + LEASE_TTL
-        print(f"{client} → {jid} | {source} (after refill) | fresh={len(job_queue)}")
-        return web.json_response(
-            {"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())}
-        )
+        print(f"{client} → {jid} | {source} (after refill) | fresh={len(job_queue)} reserve={len(recent_jobs)}")
+        return web.json_response({"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())})
 
 
 # =================== ACK ===================
@@ -251,7 +283,6 @@ async def handle_ack(request):
     async with queue_lock:
         leases.pop(jid, None)
         assigned_jobs.discard(jid)
-    # KHÔNG requeue job nữa
     return web.json_response({"ok": True})
 
 
@@ -261,6 +292,7 @@ async def handle_status(request):
     return web.json_response({
         "placeId": PLACE_ID,
         "fresh_queue": len(job_queue),
+        "fallback_store": len(recent_jobs),
         "assigned": len(assigned_jobs),
         "leases": len(leases),
         "scan_count": scan_counter,
