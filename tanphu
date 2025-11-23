@@ -1,301 +1,83 @@
-import asyncio
-import json
-import uuid
-import httpx
-import os
-import time
-from aiohttp import web
-from collections import deque, defaultdict
-from datetime import datetime
+local function buildDetailPayload(titleSuffix)
+    -- đổi "Stolen" thành "Tier" để hiện icon
+    local header = "Name                      Rarity      Gen/sec        Price        Tier\n"
+    local lines = { header }
+    for _, h in ipairs(hits) do
+        local nm = h.name or "?"
+        local rt = h.rarity or "?"
+        local gn = h.generation or "0"
+        local pr = h.priceText or "0"
 
-# =================== CONFIG ===================
-PLACE_ID = 109983668079237
-HOST = "0.0.0.0"
-PORT = 8080
+        -- icon tier theo genNumber
+        --  🟥: siêu to khổng lồ
+        --  🟧: rất ngon
+        --  🟨: ngon
+        --  🟩: đủ 10M+
+        local tierIcon = "🟩"
+        if h.genNumber and h.genNumber >= 500_000_000 then
+            tierIcon = "🟥"
+        elseif h.genNumber and h.genNumber >= 200_000_000 then
+            tierIcon = "🟧"
+        elseif h.genNumber and h.genNumber >= 100_000_000 then
+            tierIcon = "🟨"
+        end
 
-SCAN_INTERVAL = 60
-MAX_SERVERS = 200
-REFILL_BATCH = 200
-
-ROBLOX_API = "https://games.roblox.com/v1/games/{}/servers/Public?sortOrder=Asc&limit=100"
-
-# 🔐 PROXY CONFIG (chỉ dùng cho scan API, không bắt Roblox client đi qua)
-PROXY_HOST = "103.166.184.192"
-PROXY_PORT = "26235"
-PROXY_USER = "user26235"
-PROXY_PASS = "1758360642"
-PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
-
-# ====== LEASE POLICY ======
-LEASE_TTL = 60            # giây: hết hạn giữ chỗ nếu client treo
-RESCAN_COOLDOWN = 3       # giây: cho phép quét bù nếu /next gọi lúc hết hàng
-# ==========================
-
-# =================== STATE ===================
-job_queue = deque()                      # chỉ fresh jobs
-assigned_jobs = set()                    # đang được giữ bởi client
-leases = {}                              # jid -> expire_ts
-
-client_stats = defaultdict(int)
-queue_lock = asyncio.Lock()
-
-last_scan_time = 0
-next_scan_time = 0
-scan_counter = 0
-
-skip_count = 0
-
-
-# =================== CLEAR ===================
-def clear_console():
-    os.system("cls" if os.name == "nt" else "clear")
-
-
-# =================== FETCH SERVERS (multi-page) ===================
-# LẤY TẤT CẢ SERVER >=1 PLAYER, ƯU TIÊN SERVER ĐÔNG NGƯỜI (TOP 5 LOG RA)
-async def fetch_servers(max_count=MAX_SERVERS):
-    servers = []
-    cursor = None
-    fetched = 0
-    headers = {"User-Agent": "CTHub-Scanner/1.0"}
-
-    async with httpx.AsyncClient(
-        timeout=10.0,
-        verify=False,
-        proxy=PROXY_URL,
-        headers=headers
-    ) as client:
-        while len(servers) < max_count:
-            url = ROBLOX_API.format(PLACE_ID)
-            if cursor:
-                url += f"&cursor={cursor}"
-
-            try:
-                res = await client.get(url)
-                data = res.json()
-            except Exception as e:
-                print(f"⚠️ fetch_servers lỗi: {e}")
-                break
-
-            for s in data.get("data", []):
-                fetched += 1
-                if fetched <= skip_count:
-                    continue
-
-                jid = str(s.get("id", ""))
-                if not jid:
-                    continue
-
-                playing = int(s.get("playing", 0) or 0)
-
-                # bỏ server 0 player
-                if playing <= 0:
-                    continue
-
-                servers.append({"id": jid, "playing": playing})
-
-                if len(servers) >= max_count:
-                    break
-
-            if len(servers) >= max_count:
-                break
-
-            cursor = data.get("nextPageCursor")
-            if not cursor:
-                break
-
-    if not servers:
-        print("⚠️ fetch_servers: KHÔNG có server nào (>=1 player).")
-        return []
-
-    # sort nhiều người → ít người
-    servers.sort(key=lambda s: s["playing"], reverse=True)
-
-    top5 = servers[:5]
-    print(
-        f"✅ fetch_servers: lấy {len(servers)} server (>=1 player). "
-        f"Top 5 server ĐÔNG người: {[s['playing'] for s in top5]}"
-    )
-
-    return servers
-
-
-# =================== SWEEPER (chỉ clear lease, KHÔNG requeue) ===================
-async def sweep_expired_leases():
-    now = time.time()
-    expired = [jid for jid, exp in list(leases.items()) if exp <= now]
-    if not expired:
-        return
-
-    async with queue_lock:
-        for jid in expired:
-            leases.pop(jid, None)
-            assigned_jobs.discard(jid)
-
-    if expired:
-        print(f"♻️ Clear {len(expired)} job hết hạn lease (KHÔNG tái sử dụng).")
-
-
-# =================== UPDATE QUEUE — SCAN ===================
-async def update_queue():
-    global last_scan_time, next_scan_time, scan_counter
-
-    scan_counter += 1
-    new_servers = await fetch_servers(MAX_SERVERS)
-
-    async with queue_lock:
-        # 🔥 XOÁ TOÀN BỘ FRESH CŨ, KHÔNG CỘNG DỒN
-        old_count = len(job_queue)
-        job_queue.clear()
-
-        count_new = 0
-        # chỉ thêm job MỚI không trùng với assigned hiện tại
-        for s in reversed(new_servers):  # new_servers đã sort nhiều→ít
-            jid = s["id"]
-            if jid in assigned_jobs:
-                continue
-            job_queue.appendleft(jid)
-            count_new += 1
-
-        last_scan_time = time.time()
-        next_scan_time = last_scan_time + SCAN_INTERVAL
-
-    now = datetime.now().strftime("%H:%M:%S")
-    print((
-        "🔄 Scan #{0} | Xoá {3} job cũ, Thêm {1} server mới lúc {2}"
-        if count_new > 0 else
-        "⚠️ Scan #{0} | Xoá {3} job cũ, Không có server mới lúc {2}"
-    ).format(scan_counter, count_new, now, old_count))
-    print(f"📦 Fresh: {len(job_queue)}\n")
-
-
-# =================== TIMER ===================
-async def timer_loop():
-    while True:
-        remaining = max(0, int(next_scan_time - time.time()))
-        print(f"🕒 Còn {remaining}s trước khi quét...", end="\r")
-        await sweep_expired_leases()
-        await asyncio.sleep(1)
-
-
-# =================== SCANNER LOOP ===================
-async def scanner_loop():
-    while True:
-        await update_queue()
-        await asyncio.sleep(SCAN_INTERVAL)
-
-
-# =================== HANDLE NEXT ===================
-async def handle_next(request):
-    client = request.remote or "unknown"
-    client_stats[client] += 1
-
-    # Lần 1: lấy từ queue hiện tại
-    async with queue_lock:
-        jid = None
-        source = "fresh"
-
-        if job_queue:
-            jid = job_queue.popleft()
-
-        if jid:
-            assigned_jobs.add(jid)
-            leases[jid] = time.time() + LEASE_TTL
-            print(f"{client} → {jid} | {source} | fresh={len(job_queue)}")
-            try:
-                return web.json_response(
-                    {"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())}
-                )
-            except (ConnectionResetError, asyncio.CancelledError, BrokenPipeError):
-                # client disconnect: CHỈ clear, KHÔNG requeue job
-                leases.pop(jid, None)
-                assigned_jobs.discard(jid)
-                print(f"⚠️ {client} disconnect → drop {jid}")
-                raise
-
-    # Hết hàng → thử quick-rescan
-    await sweep_expired_leases()
-    if time.time() - last_scan_time >= RESCAN_COOLDOWN:
-        try:
-            await update_queue()
-        except Exception as e:
-            print(f"⚠️ quick-rescan error: {e}")
-
-    # Lần 2: thử lấy lại sau quick-rescan
-    async with queue_lock:
-        jid = None
-        source = "fresh"
-
-        if job_queue:
-            jid = job_queue.popleft()
-        else:
-            return web.json_response({
-                "jobId": None,
-                "message": "Hết job, đợi lần quét 60s tiếp theo."
-            })
-
-        assigned_jobs.add(jid)
-        leases[jid] = time.time() + LEASE_TTL
-        print(f"{client} → {jid} | {source} (after refill) | fresh={len(job_queue)}")
-        return web.json_response(
-            {"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())}
+        local line = string.format(
+            "%-24s %-10s %-13s %-10s %-4s",
+            nm:sub(1, 24),
+            rt:sub(1, 10),
+            gn:sub(1, 13),
+            pr:sub(1, 10),
+            tierIcon
         )
+        table.insert(lines, line)
+    end
 
+    local tableBlock = "```txt\n" .. table.concat(lines, "\n"):sub(1, 1010) .. "\n```"
 
-# =================== ACK ===================
-async def handle_ack(request):
-    jid = request.query.get("jobId")
-    if not jid:
-        return web.json_response({"ok": False, "error": "missing jobId"}, status=400)
-
-    async with queue_lock:
-        leases.pop(jid, None)
-        assigned_jobs.discard(jid)
-    # KHÔNG requeue job nữa
-    return web.json_response({"ok": True})
-
-
-# =================== STATUS ===================
-async def handle_status(request):
-    remaining = max(0, int(next_scan_time - time.time()))
-    return web.json_response({
-        "placeId": PLACE_ID,
-        "fresh_queue": len(job_queue),
-        "assigned": len(assigned_jobs),
-        "leases": len(leases),
-        "scan_count": scan_counter,
-        "next_refresh_in_sec": remaining,
-        "proxy": f"{PROXY_HOST}:{PROXY_PORT}"
-    })
-
-
-# =================== MAIN ===================
-async def main():
-    global skip_count
-    clear_console()
-    try:
-        skip_count = int(input("Bỏ bao nhiêu server đầu tiên (0 nếu không): ") or 0)
-    except Exception:
-        skip_count = 0
-
-    print("🚀 Khởi động server...")
-
-    asyncio.create_task(scanner_loop())
-    asyncio.create_task(timer_loop())
-
-    app = web.Application()
-    app.router.add_get("/next", handle_next)
-    app.router.add_get("/status", handle_status)
-    app.router.add_get("/ack", handle_ack)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, HOST, PORT)
-    await site.start()
-
-    print("✔️ Server đang chạy...")
-    await asyncio.Event().wait()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    return {
+        username   = webhookData.username,
+        avatar_url = webhookData.avatar,
+        content    = "",
+        embeds     = {
+            {
+                title = string.format("📟 Pets Detail%s - ||%s||", titleSuffix, playerName),
+                color = 15158332,
+                fields = {
+                    {
+                        name  = "👥 Players",
+                        value = playersCount,
+                        inline = true,
+                    },
+                    {
+                        name  = "🧑 Player",
+                        value = playerName,
+                        inline = true,
+                    },
+                    {
+                        name  = "🆔 JobId",
+                        value = tostring(game.JobId),
+                        inline = false,
+                    },
+                    {
+                        name  = "📦 Pets (table)",
+                        value = tableBlock,
+                        inline = false,
+                    },
+                    {
+                        name  = "📄 Join Script",
+                        value = joinScript,
+                        inline = false,
+                    },
+                    {
+                        name  = "🔗 Join Link",
+                        value = joinLink,
+                        inline = false,
+                    },
+                },
+                footer    = { text = "Sent by exploit script" },
+                timestamp = nowIso,
+            },
+        },
+    }
+end
