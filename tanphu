@@ -1,5 +1,6 @@
 -- Strongest Value TP + Drop Clone (Press T or tap CLONE)
--- PC + mobile (Delta) – loader: loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
+-- Dùng cho PC + mobile (Delta)
+-- Loader: loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
 local Pl = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
@@ -12,7 +13,7 @@ local LP = Pl.LocalPlayer
 local GLOBAL_MIN_VALUE = 0
 local GLOBAL_MAX_VALUE = math.huge
 
--- ========== parse number (k/m/b, text, NumberValue, ...) ==========
+-- ========= PARSE GIÁ TRỊ (K/M/B, TEXT, NUMBERVALUE, V.V.) =========
 local function parse(v)
     if typeof(v) == "number" then return v end
     if typeof(v) ~= "string" then return 0 end
@@ -44,7 +45,7 @@ local function hasToken(s, toks)
     return false
 end
 
--- ========== đọc value quanh 1 inst ==========
+-- ========= LẤY VALUE QUANH 1 OBJECT =========
 local function valueOf(inst)
     local best = 0
     if not inst then return best end
@@ -87,7 +88,7 @@ local function valueOf(inst)
     return best
 end
 
--- ========== chọn BasePart an toàn để TP ==========
+-- ========= CHỌN BASEPART AN TOÀN ĐỂ TP =========
 local function pickPart(inst)
     if not inst then return nil end
 
@@ -125,7 +126,7 @@ local function pickPart(inst)
     return nil
 end
 
--- ========== tìm object có value cao nhất ==========
+-- ========= TÌM OBJECT CÓ VALUE CAO NHẤT =========
 local function findBest()
     local bestInst, bestVal = nil, 0
     local ok, descs = pcall(workspace.GetDescendants, workspace)
@@ -135,23 +136,19 @@ local function findBest()
 
     local c = 0
     for _, inst in ipairs(descs) do
-        -- bỏ qua mấy thứ kiểu bảng, leaderboard
-        local nm = tostring(inst.Name or ""):lower()
-        if not nm:find("board") then
-            if inst:IsA("Model") or inst:IsA("BasePart") then
-                c += 1
-                if c % 160 == 0 then RunS.Heartbeat:Wait() end
+        if inst:IsA("Model") or inst:IsA("BasePart") then
+            c += 1
+            if c % 160 == 0 then RunS.Heartbeat:Wait() end
 
-                local v = 0
-                v = math.max(v, valueOf(inst))
-                v = math.max(v, valueOf(inst.Parent))
-                v = math.max(v, valueOf(inst.Parent and inst.Parent.Parent))
+            local v = 0
+            v = math.max(v, valueOf(inst))
+            v = math.max(v, valueOf(inst.Parent))
+            v = math.max(v, valueOf(inst.Parent and inst.Parent.Parent))
 
-                if v > 0 and v >= GLOBAL_MIN_VALUE and v <= GLOBAL_MAX_VALUE then
-                    if v > bestVal then
-                        bestVal = v
-                        bestInst = inst
-                    end
+            if v > 0 and v >= GLOBAL_MIN_VALUE and v <= GLOBAL_MAX_VALUE then
+                if v > bestVal then
+                    bestVal = v
+                    bestInst = inst
                 end
             end
         end
@@ -160,7 +157,7 @@ local function findBest()
     return bestInst, bestVal
 end
 
--- ========== Net / remotes ==========
+-- ========= NET / REMOTES =========
 local Net = nil
 do
     local okP, p = pcall(function()
@@ -231,7 +228,7 @@ end
 local onTp = getOnTp()
 local useItem = getUse()
 
--- ========== ping & debounce ==========
+-- ========= PING & DEBOUNCE =========
 local function getPing()
     local ok, ms = pcall(function()
         local s = Stats.Network.ServerStatsItem["Data Ping"]:GetValueString()
@@ -248,9 +245,10 @@ local function go()
     if now - last < 3 then return end
     last = now
 
+    print("[StrongTP] Scan starting...")
     local inst, val = findBest()
     if not inst then
-        warn("[StrongTP] No object found")
+        print("[StrongTP] Không tìm thấy object nào có số để bám vào (value = 0 hết).")
         return
     end
 
@@ -258,7 +256,7 @@ local function go()
 
     local part = pickPart(inst)
     if not part then
-        warn("[StrongTP] No BasePart for target")
+        print("[StrongTP] Không tìm được BasePart cho target.")
         return
     end
 
@@ -271,7 +269,7 @@ local function go()
     useItem()
 end
 
--- ========== keybind T ==========
+-- ========= KEY T =========
 UIS.InputBegan:Connect(function(i, gp)
     if gp then return end
     if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
@@ -282,7 +280,7 @@ UIS.InputBegan:Connect(function(i, gp)
     end
 end)
 
--- ========== mobile/PC button bằng ContextActionService ==========
+-- ========= NÚT CLONE (CONTEXTACTIONSERVICE) =========
 local function act(_, state)
     if state == Enum.UserInputState.Begin then
         print("[StrongTP] CLONE button pressed")
