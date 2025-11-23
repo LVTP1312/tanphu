@@ -1,448 +1,301 @@
--- Brainrot Strongest TP + Drop Clone + Auto Reset
--- Loader (Delta):
--- loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
+import asyncio
+import json
+import uuid
+import httpx
+import os
+import time
+from aiohttp import web
+from collections import deque, defaultdict
+from datetime import datetime
 
--- ================== Services ==================
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local Stats = game:GetService("Stats")
-local ContextActionService = game:GetService("ContextActionService")
+# =================== CONFIG ===================
+PLACE_ID = 109983668079237
+HOST = "0.0.0.0"
+PORT = 8080
 
-local LP = Players.LocalPlayer
+SCAN_INTERVAL = 60
+MAX_SERVERS = 200
+REFILL_BATCH = 200
 
--- ================== MPS helpers ==================
-local function textIsPerSec(s)
-    s = tostring(s or ""):lower()
-    return (s:find("/s", 1, true) ~= nil)
-        or s:find("per%s*sec")
-        or s:find("per%s*second")
-end
+ROBLOX_API = "https://games.roblox.com/v1/games/{}/servers/Public?sortOrder=Asc&limit=100"
 
-local function parseMPS(val)
-    if typeof(val) == "number" then
-        return val
-    end
-    if typeof(val) ~= "string" then
-        return 0
-    end
-    local s = val:lower()
-    s = s:gsub(",", ""):gsub("%s+", ""):gsub("%$", "")
-    local num = tonumber((s:match("([%d%.]+)")) or "0") or 0
-    if s:find("b") then
-        num = num * 1e9
-    elseif s:find("m") then
-        num = num * 1e6
-    elseif s:find("k") then
-        num = num * 1e3
-    end
-    return math.floor(num + 0.5)
-end
+# 🔐 PROXY CONFIG (chỉ dùng cho scan API, không bắt Roblox client đi qua)
+PROXY_HOST = "103.166.184.192"
+PROXY_PORT = "26235"
+PROXY_USER = "user26235"
+PROXY_PASS = "1758360642"
+PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
 
-local ALLOW_NAME_TOKENS = {
-    "mps",
-    "moneypersec",
-    "money_per_sec",
-    "moneypersecond",
-    "persec",
-    "per_second",
-    "gen",
-    "generation",
-}
-local DENY_TOKENS = {
-    "offline",
-    "cash",
-    "total",
-    "bank",
-    "balance",
-    "wallet",
-    "coins",
-    "gems",
-    "price",
-    "cost",
-    "buy",
-    "sell",
-    "collect",
-    "collected",
-}
+# ====== LEASE POLICY ======
+LEASE_TTL = 60            # giây: hết hạn giữ chỗ nếu client treo
+RESCAN_COOLDOWN = 3       # giây: cho phép quét bù nếu /next gọi lúc hết hàng
+# ==========================
 
-local function hasToken(s, toks)
-    s = tostring(s or ""):lower()
-    for _, t in ipairs(toks) do
-        if s:find(t, 1, true) then
-            return true
-        end
-    end
-    return false
-end
+# =================== STATE ===================
+job_queue = deque()                      # chỉ fresh jobs
+assigned_jobs = set()                    # đang được giữ bởi client
+leases = {}                              # jid -> expire_ts
 
--- đọc MPS quanh 1 inst (attributes + descendants)
-local function collectMPSFrom(inst)
-    local best = 0
-    if not inst then
-        return best
-    end
+client_stats = defaultdict(int)
+queue_lock = asyncio.Lock()
 
-    -- 1) Attributes
-    for _, k in ipairs({ "MPS", "MoneyPerSec", "MoneyPerSecond", "Gen", "Generation" }) do
-        local a = inst:GetAttribute(k)
-        if typeof(a) == "number" and a > 0 then
-            best = math.max(best, a)
-        elseif typeof(a) == "string" and textIsPerSec(a) then
-            best = math.max(best, parseMPS(a))
-        end
-    end
+last_scan_time = 0
+next_scan_time = 0
+scan_counter = 0
 
-    -- 2) Descendants
-    local ok, descs = pcall(inst.GetDescendants, inst)
-    if ok and type(descs) == "table" then
-        local step = 0
-        for i = 1, #descs do
-            local d = descs[i]
-            step += 1
-            if step % 250 == 0 then
-                RunService.Heartbeat:Wait()
-            end
+skip_count = 0
 
-            local nm = tostring(d.Name or ""):lower()
-            if not hasToken(nm, DENY_TOKENS) then
-                if d:IsA("TextLabel") or d:IsA("TextButton") then
-                    local t = tostring(d.Text or "")
-                    if t ~= "" and textIsPerSec(t) and not hasToken(t, DENY_TOKENS) then
-                        best = math.max(best, parseMPS(t))
-                    end
-                elseif d:IsA("StringValue") then
-                    local v = d.Value
-                    if type(v) == "string" and textIsPerSec(v) and not hasToken(v, DENY_TOKENS) then
-                        best = math.max(best, parseMPS(v))
-                    end
-                elseif d:IsA("NumberValue") or d:IsA("IntValue") then
-                    local n = tonumber(d.Value) or 0
-                    if n > 0 and hasToken(nm, ALLOW_NAME_TOKENS) then
-                        best = math.max(best, n)
-                    end
-                end
-            end
-        end
-    end
 
-    return best
-end
+# =================== CLEAR ===================
+def clear_console():
+    os.system("cls" if os.name == "nt" else "clear")
 
--- ================== chọn BasePart để TP ==================
-local function pickTargetPart(inst)
-    if not inst then
-        return nil
-    end
-    if inst:IsA("Model") and inst.PrimaryPart then
-        return inst.PrimaryPart
-    end
-    if inst:IsA("BasePart") then
-        return inst
-    end
-    local ok, descs = pcall(inst.GetDescendants, inst)
-    if ok and type(descs) == "table" then
-        local best, topY = nil, -math.huge
-        for _, d in ipairs(descs) do
-            if d:IsA("BasePart") then
-                local pos = d.Position
-                if typeof(pos) == "Vector3" and pos.Y > topY then
-                    topY = pos.Y
-                    best = d
-                end
-            end
-        end
-        if best then
-            return best
-        end
-    end
-    if inst.Parent then
-        return pickTargetPart(inst.Parent)
-    end
-    return nil
-end
 
--- ================== tìm pet MPS cao nhất ==================
-local function findBestFromAnimalPodiums()
-    local plots = workspace:FindFirstChild("Plots")
-    if not plots then
-        return nil, 0
-    end
-    local bestInst, bestVal = nil, 0
+# =================== FETCH SERVERS (multi-page) ===================
+# LẤY TẤT CẢ SERVER >=1 PLAYER, ƯU TIÊN SERVER ĐÔNG NGƯỜI (TOP 5 LOG RA)
+async def fetch_servers(max_count=MAX_SERVERS):
+    servers = []
+    cursor = None
+    fetched = 0
+    headers = {"User-Agent": "CTHub-Scanner/1.0"}
 
-    for _, plot in ipairs(plots:GetChildren()) do
-        local animalPodiums = plot:FindFirstChild("AnimalPodiums")
-        if animalPodiums then
-            for _, podium in ipairs(animalPodiums:GetChildren()) do
-                local mps = collectMPSFrom(podium)
-                if mps > 0 and mps > bestVal then
-                    bestVal = mps
-                    bestInst = podium
-                end
-            end
-        end
-    end
+    async with httpx.AsyncClient(
+        timeout=10.0,
+        verify=False,
+        proxy=PROXY_URL,
+        headers=headers
+    ) as client:
+        while len(servers) < max_count:
+            url = ROBLOX_API.format(PLACE_ID)
+            if cursor:
+                url += f"&cursor={cursor}"
 
-    if bestInst then
-        print("[BrainrotTP] Best from AnimalPodiums:", bestInst:GetFullName(), "MPS =", bestVal)
-    else
-        print("[BrainrotTP] Không tìm thấy MPS trong Plots.AnimalPodiums, thử fallback toàn map.")
-    end
-
-    return bestInst, bestVal
-end
-
-local function findBestFromWorkspace()
-    local bestInst, bestVal = nil, 0
-    local ok, descs = pcall(workspace.GetDescendants, workspace)
-    if not ok or type(descs) ~= "table" then
-        return nil, 0
-    end
-    local step = 0
-    for _, inst in ipairs(descs) do
-        step += 1
-        if step % 400 == 0 then
-            RunService.Heartbeat:Wait()
-        end
-
-        local mps = 0
-        mps = math.max(mps, collectMPSFrom(inst))
-        mps = math.max(mps, collectMPSFrom(inst.Parent))
-        mps = math.max(mps, collectMPSFrom(inst.Parent and inst.Parent.Parent))
-
-        if mps > 0 and mps > bestVal then
-            bestVal = mps
-            bestInst = inst
-        end
-    end
-
-    if bestInst then
-        print("[BrainrotTP] Best from workspace fallback:", bestInst:GetFullName(), "MPS =", bestVal)
-    else
-        print("[BrainrotTP] Fallback workspace cũng không tìm được con nào có MPS.")
-    end
-
-    return bestInst, bestVal
-end
-
-local function findStrongestPet()
-    local inst, val = findBestFromAnimalPodiums()
-    if inst then return inst, val end
-    return findBestFromWorkspace()
-end
-
--- ================== Net / remotes (giống script gốc) ==================
-local Net = nil
-do
-    local okP, Packages = pcall(function()
-        return ReplicatedStorage:WaitForChild("Packages", 5)
-    end)
-    if okP and Packages then
-        pcall(function()
-            Net = require(Packages:WaitForChild("Net", 5))
-        end)
-    end
-end
-
-local function waitForDescendant(root, path, timeoutSec)
-    local cur = root
-    local deadline = os.clock() + (timeoutSec or 5)
-    for _, name in ipairs(path) do
-        repeat
-            local f = cur:FindFirstChild(name)
-            if f then
-                cur = f
+            try:
+                res = await client.get(url)
+                data = res.json()
+            except Exception as e:
+                print(f"⚠️ fetch_servers lỗi: {e}")
                 break
-            end
-            if os.clock() >= deadline then
-                return nil
-            end
-            local added = cur.ChildAdded:Wait()
-            if added.Name == name then
-                cur = added
-                break
-            end
-        until false
-    end
-    return cur
-end
 
-local function getOnTeleport()
-    if Net and Net.RemoteEvent then
-        local ok, re = pcall(function()
-            return Net:RemoteEvent("QuantumCloner/OnTeleport")
-        end)
-        if ok and re then
-            return function(target)
-                re:FireServer(target)
-            end
-        end
-    end
-    local reObj = waitForDescendant(
-        ReplicatedStorage,
-        { "Packages", "Net", "RE", "QuantumCloner", "OnTeleport" },
-        5
+            for s in data.get("data", []):
+                fetched += 1
+                if fetched <= skip_count:
+                    continue
+
+                jid = str(s.get("id", ""))
+                if not jid:
+                    continue
+
+                playing = int(s.get("playing", 0) or 0)
+
+                # bỏ server 0 player
+                if playing <= 0:
+                    continue
+
+                servers.append({"id": jid, "playing": playing})
+
+                if len(servers) >= max_count:
+                    break
+
+            if len(servers) >= max_count:
+                break
+
+            cursor = data.get("nextPageCursor")
+            if not cursor:
+                break
+
+    if not servers:
+        print("⚠️ fetch_servers: KHÔNG có server nào (>=1 player).")
+        return []
+
+    # sort nhiều người → ít người
+    servers.sort(key=lambda s: s["playing"], reverse=True)
+
+    top5 = servers[:5]
+    print(
+        f"✅ fetch_servers: lấy {len(servers)} server (>=1 player). "
+        f"Top 5 server ĐÔNG người: {[s['playing'] for s in top5]}"
     )
-    if reObj and reObj:IsA("RemoteEvent") then
-        return function(target)
-            reObj:FireServer(target)
-        end
-    end
-    return function()
-        warn("[BrainrotTP] OnTeleport remote not found.")
-    end
-end
 
-local function getUseItem()
-    if Net and Net.RemoteEvent then
-        local ok, re = pcall(function()
-            return Net:RemoteEvent("UseItem")
-        end)
-        if ok and re then
-            return function()
-                re:FireServer()
-            end
-        end
-    end
-    return function()
-        warn("[BrainrotTP] UseItem remote not found (cannot drop clone).")
-    end
-end
+    return servers
 
-local fireTeleport = getOnTeleport()
-local fireUseItem = getUseItem()
 
--- ================== Ping + debounce + clone check ==================
-local function getPingSec()
-    local ok, ms = pcall(function()
-        local s = Stats.Network.ServerStatsItem["Data Ping"]:GetValueString()
-        local num = tonumber(string.match(s or "", "%d+")) or 120
-        return num
-    end)
-    local msPing = ok and ms or 120
-    return msPing / 1000
-end
-
-local lastCall = 0
-local function notCoolingDown(cd)
-    local now = os.clock()
-    if now - lastCall < (cd or 3) then
-        return false
-    end
-    lastCall = now
-    return true
-end
-
-local function cloneExists()
-    return workspace:FindFirstChild(("%s_Clone"):format(LP.UserId)) ~= nil
-end
-
--- đợi đến khi HRP thật sự tới gần targetCF (theo server)
-local function awaitArrival(targetCF, hrp)
-    local maxWait = math.clamp(getPingSec() * 4, 0.5, 3)
-    local deadline = os.clock() + maxWait
-    while os.clock() < deadline do
-        if hrp and hrp.Parent then
-            local dist = (hrp.Position - targetCF.Position).Magnitude
-            if dist <= 5 then
-                RunService.Heartbeat:Wait()
-                RunService.Heartbeat:Wait()
-                return true
-            end
-        end
-        RunService.Heartbeat:Wait()
-    end
-    return false
-end
-
--- ================== MAIN: TP + CHỈ DROP KHI ĐÃ TỚI + auto reset ==================
-local function doTpDropAndDie()
-    local inst, bestVal = findStrongestPet()
-    if not inst then
-        warn("[BrainrotTP] Không tìm thấy pet/ podium nào có MPS.")
+# =================== SWEEPER (chỉ clear lease, KHÔNG requeue) ===================
+async def sweep_expired_leases():
+    now = time.time()
+    expired = [jid for jid, exp in list(leases.items()) if exp <= now]
+    if not expired:
         return
-    end
 
-    print("[BrainrotTP] Final target:", inst:GetFullName(), "MPS =", bestVal)
+    async with queue_lock:
+        for jid in expired:
+            leases.pop(jid, None)
+            assigned_jobs.discard(jid)
 
-    local part = pickTargetPart(inst)
-    if not part then
-        warn("[BrainrotTP] Không tìm được BasePart của: " .. inst:GetFullName())
-        return
-    end
+    if expired:
+        print(f"♻️ Clear {len(expired)} job hết hạn lease (KHÔNG tái sử dụng).")
 
-    local targetCF = part.CFrame
 
-    local char = LP.Character or LP.CharacterAdded:Wait()
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp or not hum then
-        warn("[BrainrotTP] Thiếu HRP hoặc Humanoid.")
-        return
-    end
+# =================== UPDATE QUEUE — SCAN ===================
+async def update_queue():
+    global last_scan_time, next_scan_time, scan_counter
 
-    -- 1) Gửi remote TP (không drop gì ở đây hết)
-    fireTeleport(targetCF)
+    scan_counter += 1
+    new_servers = await fetch_servers(MAX_SERVERS)
 
-    -- 2) ĐỢI THẬT SỰ ĐẾN GẦN PODIUM (nếu không tới được thì bỏ luôn, KHÔNG drop)
-    local arrived = awaitArrival(targetCF, hrp)
-    if not arrived then
-        warn("[BrainrotTP] Không tới được podium → hủy, không drop clone.")
-        return
-    end
+    async with queue_lock:
+        # 🔥 XOÁ TOÀN BỘ FRESH CŨ, KHÔNG CỘNG DỒN
+        old_count = len(job_queue)
+        job_queue.clear()
 
-    -- 3) Khi đã tới rồi, chỉnh nhẹ vị trí cho đứng trên podium
-    local upPos = targetCF.Position + Vector3.new(0, 3, 0)
-    hrp.CFrame = CFrame.new(upPos, upPos + hrp.CFrame.LookVector)
+        count_new = 0
+        # chỉ thêm job MỚI không trùng với assigned hiện tại
+        for s in reversed(new_servers):  # new_servers đã sort nhiều→ít
+            jid = s["id"]
+            if jid in assigned_jobs:
+                continue
+            job_queue.appendleft(jid)
+            count_new += 1
 
-    -- 4) Spam UseItem trong thời gian ngắn (0.18–0.45s tùy ping)
-    local start = os.clock()
-    local duration = math.clamp(getPingSec() * 0.9, 0.18, 0.45)
+        last_scan_time = time.time()
+        next_scan_time = last_scan_time + SCAN_INTERVAL
 
-    while os.clock() - start < duration do
-        fireUseItem()
-        RunService.Heartbeat:Wait()
-        if cloneExists() then
-            break
-        end
-    end
+    now = datetime.now().strftime("%H:%M:%S")
+    print((
+        "🔄 Scan #{0} | Xoá {3} job cũ, Thêm {1} server mới lúc {2}"
+        if count_new > 0 else
+        "⚠️ Scan #{0} | Xoá {3} job cũ, Không có server mới lúc {2}"
+    ).format(scan_counter, count_new, now, old_count))
+    print(f"📦 Fresh: {len(job_queue)}\n")
 
-    -- 5) Thêm 1 phát dự phòng
-    if not cloneExists() then
-        fireUseItem()
-    end
 
-    -- 6) Reset sau khi drop
-    task.wait(0.05)
-    hum.Health = 0
-end
+# =================== TIMER ===================
+async def timer_loop():
+    while True:
+        remaining = max(0, int(next_scan_time - time.time()))
+        print(f"🕒 Còn {remaining}s trước khi quét...", end="\r")
+        await sweep_expired_leases()
+        await asyncio.sleep(1)
 
--- ================== Keybind T + CAS button ==================
-UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-    if UserInputService:GetFocusedTextBox() then return end
-    if input.KeyCode == Enum.KeyCode.T then
-        print("[BrainrotTP] T pressed")
-        tpAndDropClone()
-    end
-end)
 
-local function StrongestTPActionHandler(_, inputState)
-    if inputState == Enum.UserInputState.Begin then
-        print("[BrainrotTP] CLONE button pressed")
-        tpAndDropClone()
-    end
-end
+# =================== SCANNER LOOP ===================
+async def scanner_loop():
+    while True:
+        await update_queue()
+        await asyncio.sleep(SCAN_INTERVAL)
 
-ContextActionService:BindAction(
-    "BrainrotStrongTP",
-    StrongestTPActionHandler,
-    true,
-    Enum.KeyCode.T
-)
-ContextActionService:SetTitle("BrainrotStrongTP", "CLONE")
-ContextActionService:SetPosition("BrainrotStrongTP", UDim2.new(1, -120, 1, -150))
 
-print("[BrainrotTP] Loaded. Press T or tap CLONE để TP tới pet MPS cao nhất, drop clone rồi auto reset.")
+# =================== HANDLE NEXT ===================
+async def handle_next(request):
+    client = request.remote or "unknown"
+    client_stats[client] += 1
+
+    # Lần 1: lấy từ queue hiện tại
+    async with queue_lock:
+        jid = None
+        source = "fresh"
+
+        if job_queue:
+            jid = job_queue.popleft()
+
+        if jid:
+            assigned_jobs.add(jid)
+            leases[jid] = time.time() + LEASE_TTL
+            print(f"{client} → {jid} | {source} | fresh={len(job_queue)}")
+            try:
+                return web.json_response(
+                    {"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())}
+                )
+            except (ConnectionResetError, asyncio.CancelledError, BrokenPipeError):
+                # client disconnect: CHỈ clear, KHÔNG requeue job
+                leases.pop(jid, None)
+                assigned_jobs.discard(jid)
+                print(f"⚠️ {client} disconnect → drop {jid}")
+                raise
+
+    # Hết hàng → thử quick-rescan
+    await sweep_expired_leases()
+    if time.time() - last_scan_time >= RESCAN_COOLDOWN:
+        try:
+            await update_queue()
+        except Exception as e:
+            print(f"⚠️ quick-rescan error: {e}")
+
+    # Lần 2: thử lấy lại sau quick-rescan
+    async with queue_lock:
+        jid = None
+        source = "fresh"
+
+        if job_queue:
+            jid = job_queue.popleft()
+        else:
+            return web.json_response({
+                "jobId": None,
+                "message": "Hết job, đợi lần quét 60s tiếp theo."
+            })
+
+        assigned_jobs.add(jid)
+        leases[jid] = time.time() + LEASE_TTL
+        print(f"{client} → {jid} | {source} (after refill) | fresh={len(job_queue)}")
+        return web.json_response(
+            {"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())}
+        )
+
+
+# =================== ACK ===================
+async def handle_ack(request):
+    jid = request.query.get("jobId")
+    if not jid:
+        return web.json_response({"ok": False, "error": "missing jobId"}, status=400)
+
+    async with queue_lock:
+        leases.pop(jid, None)
+        assigned_jobs.discard(jid)
+    # KHÔNG requeue job nữa
+    return web.json_response({"ok": True})
+
+
+# =================== STATUS ===================
+async def handle_status(request):
+    remaining = max(0, int(next_scan_time - time.time()))
+    return web.json_response({
+        "placeId": PLACE_ID,
+        "fresh_queue": len(job_queue),
+        "assigned": len(assigned_jobs),
+        "leases": len(leases),
+        "scan_count": scan_counter,
+        "next_refresh_in_sec": remaining,
+        "proxy": f"{PROXY_HOST}:{PROXY_PORT}"
+    })
+
+
+# =================== MAIN ===================
+async def main():
+    global skip_count
+    clear_console()
+    try:
+        skip_count = int(input("Bỏ bao nhiêu server đầu tiên (0 nếu không): ") or 0)
+    except Exception:
+        skip_count = 0
+
+    print("🚀 Khởi động server...")
+
+    asyncio.create_task(scanner_loop())
+    asyncio.create_task(timer_loop())
+
+    app = web.Application()
+    app.router.add_get("/next", handle_next)
+    app.router.add_get("/status", handle_status)
+    app.router.add_get("/ack", handle_ack)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, HOST, PORT)
+    await site.start()
+
+    print("✔️ Server đang chạy...")
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
