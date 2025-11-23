@@ -1,41 +1,197 @@
-# Compiled Lua sources
-luac.out
+local Pl=game:GetService("Players")
+local RS=game:GetService("ReplicatedStorage")
+local UIS=game:GetService("UserInputService")
+local CAS=game:GetService("ContextActionService")
+local RunS=game:GetService("RunService")
+local Stats=game:GetService("Stats")
+local LP=Pl.LocalPlayer
 
-# luarocks build files
-*.src.rock
-*.zip
-*.tar.gz
+local function parse(v)
+    if typeof(v)=="number" then return v end
+    if typeof(v)~="string" then return 0 end
+    v=v:lower():gsub(",",""):gsub("%s+",""):gsub("%$","")
+    local n=tonumber((v:match("([%d%.]+)")) or "0") or 0
+    if v:find("b") then n=n*1e9
+    elseif v:find("m") then n=n*1e6
+    elseif v:find("k") then n=n*1e3 end
+    return n
+end
 
-# Object files
-*.o
-*.os
-*.ko
-*.obj
-*.elf
+local function valueOf(inst)
+    local best=0
+    local ok,descs=pcall(inst.GetDescendants,inst)
+    if not ok or type(descs)~="table" then return 0 end
+    local c=0
+    for _,d in ipairs(descs) do
+        c+=1
+        if c%250==0 then RunS.Heartbeat:Wait() end
+        local v=0
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            v=parse(d.Text)
+        elseif d:IsA("StringValue") then
+            v=parse(d.Value)
+        elseif d:IsA("NumberValue") or d:IsA("IntValue") then
+            v=parse(d.Value)
+        end
+        if v>best then best=v end
+    end
+    return best
+end
 
-# Precompiled Headers
-*.gch
-*.pch
+local function pickPart(inst)
+    if not inst then return nil end
+    if inst:IsA("Model") and inst.PrimaryPart then
+        return inst.PrimaryPart
+    end
+    if inst:IsA("BasePart") then return inst end
+    local ok,descs=pcall(inst.GetDescendants,inst)
+    if ok and type(descs)=="table" then
+        local top,b=nil,-math.huge
+        for _,d in ipairs(descs) do
+            if d:IsA("BasePart") then
+                local y=d.Position.Y
+                if y>top then top=y;b=d end
+            end
+        end
+        if b then return b end
+    end
+    if inst.Parent then return pickPart(inst.Parent) end
+end
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-*.def
-*.exp
+local function findBest()
+    local bestInst,bestVal=nil,0
+    local ok,descs=pcall(workspace.GetDescendants,workspace)
+    if not ok or type(descs)~="table" then return end
+    local c=0
+    for _,inst in ipairs(descs) do
+        if inst:IsA("Model") or inst:IsA("BasePart") then
+            c+=1
+            if c%160==0 then RunS.Heartbeat:Wait() end
+            local v=valueOf(inst)
+            if v>bestVal then bestVal=v;bestInst=inst end
+        end
+    end
+    return bestInst,bestVal
+end
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
+local Net=nil
+do
+    local okP,p=pcall(function()
+        return RS:WaitForChild("Packages",5)
+    end)
+    if okP and p then
+        pcall(function()
+            Net=require(p:WaitForChild("Net",5))
+        end)
+    end
+end
 
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
+local function waitDesc(root,path,t)
+    local cur=root
+    local dl=os.clock()+(t or 5)
+    for _,name in ipairs(path) do
+        repeat
+            local f=cur:FindFirstChild(name)
+            if f then cur=f;break end
+            if os.clock()>=dl then return nil end
+            local a=cur.ChildAdded:Wait()
+            if a.Name==name then cur=a;break end
+        until false
+    end
+    return cur
+end
 
+local function getOnTp()
+    if Net and Net.RemoteEvent then
+        local ok,re=pcall(function()
+            return Net:RemoteEvent("QuantumCloner/OnTeleport")
+        end)
+        if ok and re then
+            return function(target) re:FireServer(target) end
+        end
+    end
+    local reObj=waitDesc(RS,{"Packages","Net","RE","QuantumCloner","OnTeleport"},5)
+    if reObj and reObj:IsA("RemoteEvent") then
+        return function(target) reObj:FireServer(target) end
+    end
+    return function()
+        warn("[StrongTP] OnTeleport not found")
+    end
+end
+
+local function getUse()
+    if Net and Net.RemoteEvent then
+        local ok,re=pcall(function()
+            return Net:RemoteEvent("UseItem")
+        end)
+        if ok and re then
+            return function() re:FireServer() end
+        end
+    end
+    return function()
+        warn("[StrongTP] UseItem not found")
+    end
+end
+
+local onTp=getOnTp()
+local useItem=getUse()
+
+local function getPing()
+    local ok,ms=pcall(function()
+        local s=Stats.Network.ServerStatsItem["Data Ping"]:GetValueString()
+        local n=tonumber(string.match(s or "","%d+")) or 120
+        return n
+    end)
+    return ((ok and ms) or 120)/1000
+end
+
+local last=0
+local function go()
+    local now=os.clock()
+    if now-last<3 then return end
+    last=now
+
+    local inst,val=findBest()
+    if not inst then
+        warn("[StrongTP] No object found")
+        return
+    end
+    print("[StrongTP] Target:",inst:GetFullName(),"Val:",val)
+
+    local part=pickPart(inst)
+    if not part then
+        warn("[StrongTP] No BasePart for target")
+        return
+    end
+
+    local cf=part.CFrame
+    local char=LP.Character or LP.CharacterAdded:Wait()
+    local hrp=char:WaitForChild("HumanoidRootPart")
+    onTp(cf)
+    hrp.CFrame=cf+Vector3.new(0,3,0)
+    task.wait(getPing()*1.5+0.2)
+    useItem()
+end
+
+UIS.InputBegan:Connect(function(i,gp)
+    if gp then return end
+    if i.UserInputType~=Enum.UserInputType.Keyboard then return end
+    if UIS:GetFocusedTextBox() then return end
+    if i.KeyCode==Enum.KeyCode.T then
+        print("[StrongTP] T pressed")
+        go()
+    end
+end)
+
+local function act(_,state)
+    if state==Enum.UserInputState.Begin then
+        print("[StrongTP] CLONE button pressed")
+        go()
+    end
+end
+
+CAS:BindAction("StrongTP",act,true,Enum.KeyCode.T)
+CAS:SetTitle("StrongTP","CLONE")
+CAS:SetPosition("StrongTP",UDim2.new(1,-120,1,-150))
+
+print("[StrongTP] Loaded. Press T or tap CLONE.")
