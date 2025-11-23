@@ -1,4 +1,4 @@
--- Brainrot Strongest TP + Drop Clone (AUTO từ AnimalPodiums, spam drop nhanh)
+-- Brainrot Strongest TP + Drop Clone (AUTO từ AnimalPodiums, spawn clone trước rồi teleport)
 -- Loader (Delta):
 -- loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
@@ -130,7 +130,7 @@ local function collectMPSFrom(inst)
     return best
 end
 
--- ================== chọn BasePart để TP ==================
+-- ================== chọn BasePart để TP (cho clone) ==================
 local function pickTargetPart(inst)
     if not inst then
         return nil
@@ -164,8 +164,6 @@ local function pickTargetPart(inst)
 end
 
 -- ================== tìm pet MPS cao nhất ==================
-
--- ƯU TIÊN: workspace.Plots -> plot -> AnimalPodiums -> mỗi podium
 local function findBestFromAnimalPodiums()
     local plots = workspace:FindFirstChild("Plots")
     if not plots then
@@ -195,7 +193,6 @@ local function findBestFromAnimalPodiums()
     return bestInst, bestVal
 end
 
--- Fallback: scan toàn workspace (dự phòng)
 local function findBestFromWorkspace()
     local bestInst, bestVal = nil, 0
     local ok, descs = pcall(workspace.GetDescendants, workspace)
@@ -230,12 +227,8 @@ local function findBestFromWorkspace()
 end
 
 local function findStrongestPet()
-    -- 1) thử từ AnimalPodiums trước
     local inst, val = findBestFromAnimalPodiums()
-    if inst then
-        return inst, val
-    end
-    -- 2) fallback: toàn workspace
+    if inst then return inst, val end
     return findBestFromWorkspace()
 end
 
@@ -281,8 +274,8 @@ local function getOnTeleport()
             return Net:RemoteEvent("QuantumCloner/OnTeleport")
         end)
         if ok and re then
-            return function(target)
-                re:FireServer(target)
+            return function(targetCF)
+                re:FireServer(targetCF)
             end,
             "Net"
         end
@@ -293,8 +286,8 @@ local function getOnTeleport()
         5
     )
     if reObj and reObj:IsA("RemoteEvent") then
-        return function(target)
-            reObj:FireServer(target)
+        return function(targetCF)
+            reObj:FireServer(targetCF)
         end,
         "REPath"
     end
@@ -331,7 +324,7 @@ local function getPingSec()
         return num
     end)
     local msPing = ok and ms or 120
-    return (msPing / 1000)
+    return msPing / 1000
 end
 
 local lastCall = 0
@@ -348,7 +341,33 @@ local function cloneExists()
     return workspace:FindFirstChild(("%s_Clone"):format(LP.UserId)) ~= nil
 end
 
--- ================== MAIN ACTION (TP + SPAM DROP CỰC SỚM) ==================
+-- spawn clone nhanh tại vị trí player (SPAM UseItem)
+local function ensureClone()
+    if cloneExists() then
+        return true
+    end
+
+    local start = os.clock()
+    local duration = math.clamp(getPingSec() * 1.2, 0.3, 1.0)
+    while os.clock() - start < duration do
+        fireUseItem()
+        RunService.Heartbeat:Wait()
+        if cloneExists() then
+            print("[BrainrotTP] Clone spawned.")
+            return true
+        end
+    end
+
+    if cloneExists() then
+        print("[BrainrotTP] Clone spawned (late).")
+        return true
+    end
+
+    warn("[BrainrotTP] Không spawn được clone.")
+    return false
+end
+
+-- ================== MAIN ACTION (SPAWN CLONE → TELEPORT CLONE) ==================
 local function doTpAndDrop()
     local inst, bestVal = findStrongestPet()
     if not inst then
@@ -366,40 +385,14 @@ local function doTpAndDrop()
 
     local cf = part.CFrame
 
-    local char = LP.Character or LP.CharacterAdded:Wait()
-    local hrp = char:FindFirstChild("HumanoidRootPart")
+    -- 1) Đảm bảo đã có clone (drop tại chỗ người chơi)
+    if not ensureClone() then
+        return
+    end
 
-    -- TP bằng remote (server) + ép CFrame client
+    -- 2) Dùng OnTeleport để dịch clone tới cf
+    print("[BrainrotTP] Teleport clone to target...")
     fireTeleport(cf)
-    if hrp then
-        hrp.CFrame = cf + Vector3.new(0, 3, 0)
-    end
-
-    -- ⚡ SPAM DROP NGAY SAU TELEPORT
-    local start = os.clock()
-    local duration = math.clamp(getPingSec() * 1.2, 0.4, 1.0)
-    local dropped = false
-
-    while os.clock() - start < duration do
-        if hrp then
-            -- giữ nhân vật dính chặt vị trí target để hạn chế giựt về
-            hrp.CFrame = cf + Vector3.new(0, 3, 0)
-        end
-
-        fireUseItem() -- drop clone liên tục
-        RunService.Heartbeat:Wait()
-
-        if cloneExists() then
-            dropped = true
-            break
-        end
-    end
-
-    -- nếu vẫn chưa có clone, bắn thêm 1 phát nữa sau 1 chút
-    if not dropped then
-        task.wait(getPingSec() * 0.8)
-        fireUseItem()
-    end
 end
 
 local function tpAndDropClone()
@@ -442,4 +435,4 @@ ContextActionService:BindAction(
 ContextActionService:SetTitle("BrainrotStrongTP", "CLONE")
 ContextActionService:SetPosition("BrainrotStrongTP", UDim2.new(1, -120, 1, -150))
 
-print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới AnimalPodium MPS cao nhất và spam drop clone nhanh.")
+print("[BrainrotTP] Loaded. Press T or tap CLONE để auto chọn AnimalPodium MPS cao nhất, spawn clone & teleport clone tới đó.")
