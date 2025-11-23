@@ -288,7 +288,7 @@ local function cloneExists()
     return workspace:FindFirstChild(("%s_Clone"):format(LP.UserId)) ~= nil
 end
 
--- ================== MAIN ACTION: TP + ĐỢI PING + DROP ==================
+-- ================== MAIN ACTION: TP + ĐỢI RẤT NGẮN + SPAM DROP ==================
 local function doTpAndDrop()
     local inst, bestVal = findStrongestPet()
     if not inst then
@@ -316,33 +316,31 @@ local function doTpAndDrop()
     -- 1) TP client tới podium
     hrp.CFrame = cf + Vector3.new(0, 3, 0)
 
-    -- 2) ĐỢI THEO PING cho server kịp cập nhật vị trí mới
-    --    => tránh trường hợp drop clone ở chỗ cũ
-    local delay = math.clamp(getPingSec() * 1.1, 0.25, 0.6)
+    -- 2) ĐỢI RẤT NGẮN THEO PING (cho server cập nhật vị trí mới)
+    --    làm sát hơn: min 0.08s, max 0.20s
+    local delay = math.clamp(getPingSec() * 0.3, 0.08, 0.20)
     task.wait(delay)
 
-    -- 3) Spam UseItem trong thời gian rất ngắn để chắc clone rơi
+    -- 3) Vừa giữ player dính podium, vừa spam UseItem trong 0.18–0.45s
     local start = os.clock()
-    local duration = math.clamp(getPingSec() * 0.6, 0.15, 0.35)
+    local duration = math.clamp(getPingSec() * 0.8, 0.18, 0.45)
+
     while os.clock() - start < duration do
+        -- "ghim" player tại vị trí podium để hạn chế bị kéo lệch
+        hrp.CFrame = cf + Vector3.new(0, 3, 0)
+
         fireUseItem()
         RunService.Heartbeat:Wait()
+
         if cloneExists() then
             break
         end
     end
 
-    -- thêm 1 phát dự phòng
+    -- 4) Thêm 1 phát dự phòng ngay sau đó
     if not cloneExists() then
         fireUseItem()
     end
-end
-
-local function tpAndDropClone()
-    if not notCoolingDown(2.5) then
-        return
-    end
-    task.spawn(doTpAndDrop)
 end
 
 -- ================== Keybind T + CAS button ==================
