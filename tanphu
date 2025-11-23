@@ -1,4 +1,4 @@
--- Brainrot Strongest TP + Drop Clone (AUTO AnimalPodiums, TP + spam drop nhanh)
+-- Brainrot Strongest TP + Drop Clone (AUTO AnimalPodiums, TP + drop đúng chỗ)
 -- Loader (Delta):
 -- loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
@@ -288,7 +288,7 @@ local function cloneExists()
     return workspace:FindFirstChild(("%s_Clone"):format(LP.UserId)) ~= nil
 end
 
--- ================== MAIN ACTION: TP + SPAM DROP SỚM ==================
+-- ================== MAIN ACTION: TP + ĐỢI PING + DROP ==================
 local function doTpAndDrop()
     local inst, bestVal = findStrongestPet()
     if not inst then
@@ -313,29 +313,27 @@ local function doTpAndDrop()
         return
     end
 
-    -- TP client tới podium (không dùng OnTeleport nữa)
+    -- 1) TP client tới podium
     hrp.CFrame = cf + Vector3.new(0, 3, 0)
 
-    -- thời gian spam cực ngắn, dựa theo ping
+    -- 2) ĐỢI THEO PING cho server kịp cập nhật vị trí mới
+    --    => tránh trường hợp drop clone ở chỗ cũ
+    local delay = math.clamp(getPingSec() * 1.1, 0.25, 0.6)
+    task.wait(delay)
+
+    -- 3) Spam UseItem trong thời gian rất ngắn để chắc clone rơi
     local start = os.clock()
-    local duration = math.clamp(getPingSec() * 0.8, 0.15, 0.4)
-    local dropped = false
-
+    local duration = math.clamp(getPingSec() * 0.6, 0.15, 0.35)
     while os.clock() - start < duration do
-        -- giữ player dính podium (hạn chế giựt)
-        hrp.CFrame = cf + Vector3.new(0, 3, 0)
-
         fireUseItem()
         RunService.Heartbeat:Wait()
-
         if cloneExists() then
-            dropped = true
             break
         end
     end
 
-    -- thêm 1 phát dự phòng ngay sau đó
-    if not dropped then
+    -- thêm 1 phát dự phòng
+    if not cloneExists() then
         fireUseItem()
     end
 end
@@ -380,4 +378,4 @@ ContextActionService:BindAction(
 ContextActionService:SetTitle("BrainrotStrongTP", "CLONE")
 ContextActionService:SetPosition("BrainrotStrongTP", UDim2.new(1, -120, 1, -150))
 
-print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới podium MPS cao nhất và drop clone thật sớm.")
+print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới podium MPS cao nhất và drop clone đúng chỗ.")
