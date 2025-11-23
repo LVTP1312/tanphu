@@ -1,4 +1,4 @@
--- Brainrot Strongest TP + Drop Clone (AUTO AnimalPodiums, TP remote + drop đúng chỗ)
+-- Brainrot Strongest TP + Drop Clone (TP bằng remote, đợi đến nơi rồi mới drop)
 -- Loader (Delta):
 -- loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
@@ -341,7 +341,26 @@ local function cloneExists()
     return workspace:FindFirstChild(("%s_Clone"):format(LP.UserId)) ~= nil
 end
 
--- ================== MAIN ACTION: TP remote + chờ ngắn + spam drop ==================
+-- đợi đến khi HRP thật sự tới gần targetCF (theo server)
+local function awaitArrival(targetCF, hrp)
+    local maxWait = math.clamp(getPingSec() * 4, 0.5, 3)
+    local deadline = os.clock() + maxWait
+    while os.clock() < deadline do
+        if hrp and hrp.Parent then
+            local dist = (hrp.Position - targetCF.Position).Magnitude
+            if dist <= 5 then
+                -- chờ thêm vài frame cho chắc
+                RunService.Heartbeat:Wait()
+                RunService.Heartbeat:Wait()
+                return true
+            end
+        end
+        RunService.Heartbeat:Wait()
+    end
+    return false
+end
+
+-- ================== MAIN ACTION: TP remote + chờ tới nơi + spam drop ==================
 local function doTpAndDrop()
     local inst, bestVal = findStrongestPet()
     if not inst then
@@ -366,18 +385,18 @@ local function doTpAndDrop()
         return
     end
 
-    -- 1) TP bằng remote chính chủ + set CFrame client hỗ trợ
+    -- 1) TP bằng remote của game (không động vào CFrame client trước)
     fireTeleport(cf)
-    hrp.CFrame = cf + Vector3.new(0, 3, 0)
 
-    -- 2) ĐỢI THEO PING (rất ngắn) cho server kịp nhận vị trí mới
-    --    nếu ping thấp ~50ms thì ~0.08s; ping cao thì tối đa 0.30s
-    local delay = math.clamp(getPingSec() * 0.9, 0.08, 0.30)
-    task.wait(delay)
+    -- 2) Đợi tới khi HRP thực sự tới gần target (theo dữ liệu server sync về)
+    local arrived = awaitArrival(cf, hrp)
+    if not arrived then
+        warn("[BrainrotTP] Không xác nhận được đã tới podium, vẫn thử drop.")
+    end
 
-    -- 3) Spam UseItem trong thời gian ngắn (0.2–0.5s)
+    -- 3) Ngay sau khi coi như đã tới => spam UseItem trong 0.25–0.6s
     local start = os.clock()
-    local duration = math.clamp(getPingSec() * 1.0, 0.20, 0.50)
+    local duration = math.clamp(getPingSec() * 1.2, 0.25, 0.6)
 
     while os.clock() - start < duration do
         fireUseItem()
@@ -387,7 +406,7 @@ local function doTpAndDrop()
         end
     end
 
-    -- 4) 1 phát dự phòng
+    -- 4) 1 phát dự phòng nếu vẫn chưa thấy clone
     if not cloneExists() then
         fireUseItem()
     end
@@ -433,4 +452,4 @@ ContextActionService:BindAction(
 ContextActionService:SetTitle("BrainrotStrongTP", "CLONE")
 ContextActionService:SetPosition("BrainrotStrongTP", UDim2.new(1, -120, 1, -150))
 
-print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới podium MPS cao nhất và drop clone sau TP.")
+print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới podium MPS cao nhất và drop clone sau khi tới nơi.")
