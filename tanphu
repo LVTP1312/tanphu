@@ -1,4 +1,4 @@
--- Brainrot Strongest TP + Drop Clone (TP bằng remote, đợi đến nơi rồi mới drop)
+-- Brainrot Strongest TP + Drop Clone + Auto Reset
 -- Loader (Delta):
 -- loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
@@ -232,7 +232,7 @@ local function findStrongestPet()
     return findBestFromWorkspace()
 end
 
--- ================== Net / remotes ==================
+-- ================== Net / remotes (giống script gốc) ==================
 local Net = nil
 do
     local okP, Packages = pcall(function()
@@ -274,10 +274,9 @@ local function getOnTeleport()
             return Net:RemoteEvent("QuantumCloner/OnTeleport")
         end)
         if ok and re then
-            return function(targetCF)
-                re:FireServer(targetCF)
-            end,
-            "Net"
+            return function(target)
+                re:FireServer(target)
+            end
         end
     end
     local reObj = waitForDescendant(
@@ -286,15 +285,13 @@ local function getOnTeleport()
         5
     )
     if reObj and reObj:IsA("RemoteEvent") then
-        return function(targetCF)
-            reObj:FireServer(targetCF)
-        end,
-        "REPath"
+        return function(target)
+            reObj:FireServer(target)
+        end
     end
     return function()
         warn("[BrainrotTP] OnTeleport remote not found.")
-    end,
-    "None"
+    end
 end
 
 local function getUseItem()
@@ -313,7 +310,7 @@ local function getUseItem()
     end
 end
 
-local fireTeleport, _via = getOnTeleport()
+local fireTeleport = getOnTeleport()
 local fireUseItem = getUseItem()
 
 -- ================== Ping + debounce + clone check ==================
@@ -349,7 +346,6 @@ local function awaitArrival(targetCF, hrp)
         if hrp and hrp.Parent then
             local dist = (hrp.Position - targetCF.Position).Magnitude
             if dist <= 5 then
-                -- chờ thêm vài frame cho chắc
                 RunService.Heartbeat:Wait()
                 RunService.Heartbeat:Wait()
                 return true
@@ -360,8 +356,8 @@ local function awaitArrival(targetCF, hrp)
     return false
 end
 
--- ================== MAIN ACTION: TP remote + chờ tới nơi + spam drop ==================
-local function doTpAndDrop()
+-- ================== MAIN: TP + drop + auto reset ==================
+local function doTpDropAndDie()
     local inst, bestVal = findStrongestPet()
     if not inst then
         warn("[BrainrotTP] Không tìm thấy pet/ podium nào có MPS.")
@@ -380,24 +376,22 @@ local function doTpAndDrop()
 
     local char = LP.Character or LP.CharacterAdded:Wait()
     local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        warn("[BrainrotTP] Không tìm thấy HumanoidRootPart.")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then
+        warn("[BrainrotTP] Thiếu HRP hoặc Humanoid.")
         return
     end
 
-    -- 1) TP bằng remote của game (không động vào CFrame client trước)
+    -- 1) TP bằng remote + hỗ trợ CFrame client
     fireTeleport(cf)
+    hrp.CFrame = cf + Vector3.new(0, 3, 0)
 
-    -- 2) Đợi tới khi HRP thực sự tới gần target (theo dữ liệu server sync về)
-    local arrived = awaitArrival(cf, hrp)
-    if not arrived then
-        warn("[BrainrotTP] Không xác nhận được đã tới podium, vẫn thử drop.")
-    end
+    -- 2) Đợi tới khi server thực sự đưa bạn tới gần podium
+    awaitArrival(cf, hrp)
 
-    -- 3) Ngay sau khi coi như đã tới => spam UseItem trong 0.25–0.6s
+    -- 3) Spam UseItem 1 đoạn ngắn cho clone rơi
     local start = os.clock()
     local duration = math.clamp(getPingSec() * 1.2, 0.25, 0.6)
-
     while os.clock() - start < duration do
         fireUseItem()
         RunService.Heartbeat:Wait()
@@ -405,31 +399,26 @@ local function doTpAndDrop()
             break
         end
     end
-
-    -- 4) 1 phát dự phòng nếu vẫn chưa thấy clone
     if not cloneExists() then
         fireUseItem()
     end
+
+    -- 4) Auto reset ngay sau khi drop
+    hum.Health = 0
 end
 
 local function tpAndDropClone()
     if not notCoolingDown(2.5) then
         return
     end
-    task.spawn(doTpAndDrop)
+    task.spawn(doTpDropAndDie)
 end
 
 -- ================== Keybind T + CAS button ==================
 UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then
-        return
-    end
-    if input.UserInputType ~= Enum.UserInputType.Keyboard then
-        return
-    end
-    if UserInputService:GetFocusedTextBox() then
-        return
-    end
+    if gp then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    if UserInputService:GetFocusedTextBox() then return end
     if input.KeyCode == Enum.KeyCode.T then
         print("[BrainrotTP] T pressed")
         tpAndDropClone()
@@ -452,4 +441,4 @@ ContextActionService:BindAction(
 ContextActionService:SetTitle("BrainrotStrongTP", "CLONE")
 ContextActionService:SetPosition("BrainrotStrongTP", UDim2.new(1, -120, 1, -150))
 
-print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới podium MPS cao nhất và drop clone sau khi tới nơi.")
+print("[BrainrotTP] Loaded. Press T or tap CLONE để TP tới pet MPS cao nhất, drop clone rồi auto reset.")
