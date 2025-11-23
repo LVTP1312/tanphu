@@ -1,101 +1,196 @@
-local Pl=game:GetService("Players")
-local RS=game:GetService("ReplicatedStorage")
-local UIS=game:GetService("UserInputService")
-local CAS=game:GetService("ContextActionService")
-local RunS=game:GetService("RunService")
-local Stats=game:GetService("Stats")
-local LP=Pl.LocalPlayer
+-- Strongest Value TP + Drop Clone (Press T or tap CLONE)
+-- PC + mobile (Delta) – loader: loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
+local Pl = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local UIS = game:GetService("UserInputService")
+local CAS = game:GetService("ContextActionService")
+local RunS = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+local LP = Pl.LocalPlayer
+
+local GLOBAL_MIN_VALUE = 0
+local GLOBAL_MAX_VALUE = math.huge
+
+-- ========== parse number (k/m/b, text, NumberValue, ...) ==========
 local function parse(v)
-    if typeof(v)=="number" then return v end
-    if typeof(v)~="string" then return 0 end
-    v=v:lower():gsub(",",""):gsub("%s+",""):gsub("%$","")
-    local n=tonumber((v:match("([%d%.]+)")) or "0") or 0
-    if v:find("b") then n=n*1e9
-    elseif v:find("m") then n=n*1e6
-    elseif v:find("k") then n=n*1e3 end
+    if typeof(v) == "number" then return v end
+    if typeof(v) ~= "string" then return 0 end
+    v = v:lower():gsub(",", ""):gsub("%s+", ""):gsub("%$", "")
+    if not v:match("%d") then return 0 end
+    local n = tonumber((v:match("([%d%.]+)")) or "0") or 0
+    if v:find("b") then
+        n = n * 1e9
+    elseif v:find("m") then
+        n = n * 1e6
+    elseif v:find("k") then
+        n = n * 1e3
+    end
     return n
 end
 
-local function valueOf(inst)
-    local best=0
-    local ok,descs=pcall(inst.GetDescendants,inst)
-    if not ok or type(descs)~="table" then return 0 end
-    local c=0
-    for _,d in ipairs(descs) do
-        c+=1
-        if c%250==0 then RunS.Heartbeat:Wait() end
-        local v=0
-        if d:IsA("TextLabel") or d:IsA("TextButton") then
-            v=parse(d.Text)
-        elseif d:IsA("StringValue") then
-            v=parse(d.Value)
-        elseif d:IsA("NumberValue") or d:IsA("IntValue") then
-            v=parse(d.Value)
+local DENY_TOKENS = {
+    "offline","cash","total","bank","balance","wallet",
+    "coins","gems","price","cost","buy","sell","collect","collected"
+}
+
+local function hasToken(s, toks)
+    s = tostring(s or ""):lower()
+    for _, t in ipairs(toks) do
+        if s:find(t, 1, true) then
+            return true
         end
-        if v>best then best=v end
     end
+    return false
+end
+
+-- ========== đọc value quanh 1 inst ==========
+local function valueOf(inst)
+    local best = 0
+    if not inst then return best end
+
+    -- Attributes thường gặp
+    for _, k in ipairs({ "MPS","MoneyPerSec","MoneyPerSecond","Value","Gen","Generation" }) do
+        local a = inst:GetAttribute(k)
+        if typeof(a) == "number" and a > 0 then
+            if a > best then best = a end
+        elseif typeof(a) == "string" then
+            local v = parse(a)
+            if v > best then best = v end
+        end
+    end
+
+    local ok, descs = pcall(inst.GetDescendants, inst)
+    if not ok or type(descs) ~= "table" then
+        return best
+    end
+
+    local c = 0
+    for _, d in ipairs(descs) do
+        c += 1
+        if c % 250 == 0 then RunS.Heartbeat:Wait() end
+
+        local nm = tostring(d.Name or ""):lower()
+        if not hasToken(nm, DENY_TOKENS) then
+            local v = 0
+            if d:IsA("TextLabel") or d:IsA("TextButton") then
+                v = parse(d.Text)
+            elseif d:IsA("StringValue") then
+                v = parse(d.Value)
+            elseif d:IsA("NumberValue") or d:IsA("IntValue") then
+                v = parse(d.Value)
+            end
+            if v > best then best = v end
+        end
+    end
+
     return best
 end
 
+-- ========== chọn BasePart an toàn để TP ==========
 local function pickPart(inst)
     if not inst then return nil end
+
     if inst:IsA("Model") and inst.PrimaryPart then
         return inst.PrimaryPart
     end
-    if inst:IsA("BasePart") then return inst end
-    local ok,descs=pcall(inst.GetDescendants,inst)
-    if ok and type(descs)=="table" then
-        local top,b=nil,-math.huge
-        for _,d in ipairs(descs) do
+
+    if inst:IsA("BasePart") then
+        return inst
+    end
+
+    local ok, descs = pcall(inst.GetDescendants, inst)
+    if ok and type(descs) == "table" then
+        local best, topY = nil, -1e9
+        for _, d in ipairs(descs) do
             if d:IsA("BasePart") then
-                local y=d.Position.Y
-                if y>top then top=y;b=d end
+                local pos = d.Position
+                if typeof(pos) == "Vector3" then
+                    local y = pos.Y
+                    if typeof(y) == "number" and y > topY then
+                        topY = y
+                        best = d
+                    end
+                end
             end
         end
-        if b then return b end
+        if best then return best end
     end
-    if inst.Parent then return pickPart(inst.Parent) end
+
+    local parent = inst.Parent
+    if parent then
+        return pickPart(parent)
+    end
+
+    return nil
 end
 
+-- ========== tìm object có value cao nhất ==========
 local function findBest()
-    local bestInst,bestVal=nil,0
-    local ok,descs=pcall(workspace.GetDescendants,workspace)
-    if not ok or type(descs)~="table" then return end
-    local c=0
-    for _,inst in ipairs(descs) do
-        if inst:IsA("Model") or inst:IsA("BasePart") then
-            c+=1
-            if c%160==0 then RunS.Heartbeat:Wait() end
-            local v=valueOf(inst)
-            if v>bestVal then bestVal=v;bestInst=inst end
+    local bestInst, bestVal = nil, 0
+    local ok, descs = pcall(workspace.GetDescendants, workspace)
+    if not ok or type(descs) ~= "table" then
+        return nil, 0
+    end
+
+    local c = 0
+    for _, inst in ipairs(descs) do
+        -- bỏ qua mấy thứ kiểu bảng, leaderboard
+        local nm = tostring(inst.Name or ""):lower()
+        if not nm:find("board") then
+            if inst:IsA("Model") or inst:IsA("BasePart") then
+                c += 1
+                if c % 160 == 0 then RunS.Heartbeat:Wait() end
+
+                local v = 0
+                v = math.max(v, valueOf(inst))
+                v = math.max(v, valueOf(inst.Parent))
+                v = math.max(v, valueOf(inst.Parent and inst.Parent.Parent))
+
+                if v > 0 and v >= GLOBAL_MIN_VALUE and v <= GLOBAL_MAX_VALUE then
+                    if v > bestVal then
+                        bestVal = v
+                        bestInst = inst
+                    end
+                end
+            end
         end
     end
-    return bestInst,bestVal
+
+    return bestInst, bestVal
 end
 
-local Net=nil
+-- ========== Net / remotes ==========
+local Net = nil
 do
-    local okP,p=pcall(function()
-        return RS:WaitForChild("Packages",5)
+    local okP, p = pcall(function()
+        return RS:WaitForChild("Packages", 5)
     end)
     if okP and p then
         pcall(function()
-            Net=require(p:WaitForChild("Net",5))
+            Net = require(p:WaitForChild("Net", 5))
         end)
     end
 end
 
-local function waitDesc(root,path,t)
-    local cur=root
-    local dl=os.clock()+(t or 5)
-    for _,name in ipairs(path) do
+local function waitDesc(root, path, t)
+    local cur = root
+    local dl = os.clock() + (t or 5)
+    for _, name in ipairs(path) do
         repeat
-            local f=cur:FindFirstChild(name)
-            if f then cur=f;break end
-            if os.clock()>=dl then return nil end
-            local a=cur.ChildAdded:Wait()
-            if a.Name==name then cur=a;break end
+            local f = cur:FindFirstChild(name)
+            if f then
+                cur = f
+                break
+            end
+            if os.clock() >= dl then
+                return nil
+            end
+            local a = cur.ChildAdded:Wait()
+            if a.Name == name then
+                cur = a
+                break
+            end
         until false
     end
     return cur
@@ -103,14 +198,14 @@ end
 
 local function getOnTp()
     if Net and Net.RemoteEvent then
-        local ok,re=pcall(function()
+        local ok, re = pcall(function()
             return Net:RemoteEvent("QuantumCloner/OnTeleport")
         end)
         if ok and re then
             return function(target) re:FireServer(target) end
         end
     end
-    local reObj=waitDesc(RS,{"Packages","Net","RE","QuantumCloner","OnTeleport"},5)
+    local reObj = waitDesc(RS, { "Packages","Net","RE","QuantumCloner","OnTeleport" }, 5)
     if reObj and reObj:IsA("RemoteEvent") then
         return function(target) reObj:FireServer(target) end
     end
@@ -121,7 +216,7 @@ end
 
 local function getUse()
     if Net and Net.RemoteEvent then
-        local ok,re=pcall(function()
+        local ok, re = pcall(function()
             return Net:RemoteEvent("UseItem")
         end)
         if ok and re then
@@ -133,65 +228,70 @@ local function getUse()
     end
 end
 
-local onTp=getOnTp()
-local useItem=getUse()
+local onTp = getOnTp()
+local useItem = getUse()
 
+-- ========== ping & debounce ==========
 local function getPing()
-    local ok,ms=pcall(function()
-        local s=Stats.Network.ServerStatsItem["Data Ping"]:GetValueString()
-        local n=tonumber(string.match(s or "","%d+")) or 120
+    local ok, ms = pcall(function()
+        local s = Stats.Network.ServerStatsItem["Data Ping"]:GetValueString()
+        local n = tonumber(string.match(s or "", "%d+")) or 120
         return n
     end)
-    return ((ok and ms) or 120)/1000
+    return ((ok and ms) or 120) / 1000
 end
 
-local last=0
-local function go()
-    local now=os.clock()
-    if now-last<3 then return end
-    last=now
+local last = 0
 
-    local inst,val=findBest()
+local function go()
+    local now = os.clock()
+    if now - last < 3 then return end
+    last = now
+
+    local inst, val = findBest()
     if not inst then
         warn("[StrongTP] No object found")
         return
     end
-    print("[StrongTP] Target:",inst:GetFullName(),"Val:",val)
 
-    local part=pickPart(inst)
+    print("[StrongTP] Target:", inst:GetFullName(), "Val:", val)
+
+    local part = pickPart(inst)
     if not part then
         warn("[StrongTP] No BasePart for target")
         return
     end
 
-    local cf=part.CFrame
-    local char=LP.Character or LP.CharacterAdded:Wait()
-    local hrp=char:WaitForChild("HumanoidRootPart")
+    local cf = part.CFrame
+    local char = LP.Character or LP.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart")
     onTp(cf)
-    hrp.CFrame=cf+Vector3.new(0,3,0)
-    task.wait(getPing()*1.5+0.2)
+    hrp.CFrame = cf + Vector3.new(0, 3, 0)
+    task.wait(getPing() * 1.5 + 0.2)
     useItem()
 end
 
-UIS.InputBegan:Connect(function(i,gp)
+-- ========== keybind T ==========
+UIS.InputBegan:Connect(function(i, gp)
     if gp then return end
-    if i.UserInputType~=Enum.UserInputType.Keyboard then return end
+    if i.UserInputType ~= Enum.UserInputType.Keyboard then return end
     if UIS:GetFocusedTextBox() then return end
-    if i.KeyCode==Enum.KeyCode.T then
+    if i.KeyCode == Enum.KeyCode.T then
         print("[StrongTP] T pressed")
         go()
     end
 end)
 
-local function act(_,state)
-    if state==Enum.UserInputState.Begin then
+-- ========== mobile/PC button bằng ContextActionService ==========
+local function act(_, state)
+    if state == Enum.UserInputState.Begin then
         print("[StrongTP] CLONE button pressed")
         go()
     end
 end
 
-CAS:BindAction("StrongTP",act,true,Enum.KeyCode.T)
-CAS:SetTitle("StrongTP","CLONE")
-CAS:SetPosition("StrongTP",UDim2.new(1,-120,1,-150))
+CAS:BindAction("StrongTP", act, true, Enum.KeyCode.T)
+CAS:SetTitle("StrongTP", "CLONE")
+CAS:SetPosition("StrongTP", UDim2.new(1, -120, 1, -150))
 
 print("[StrongTP] Loaded. Press T or tap CLONE.")
