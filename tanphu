@@ -1,4 +1,4 @@
--- Brainrot Strongest TP + Drop Clone (AUTO AnimalPodiums, TP + drop đúng chỗ)
+-- Brainrot Strongest TP + Drop Clone (AUTO AnimalPodiums, TP remote + drop đúng chỗ)
 -- Loader (Delta):
 -- loadstring(game:HttpGet("https://raw.githubusercontent.com/LVTP1312/tanphu/main/tanphu"))()
 
@@ -84,7 +84,7 @@ local function collectMPSFrom(inst)
         return best
     end
 
-    -- 1) Attributes thường gặp
+    -- 1) Attributes
     for _, k in ipairs({ "MPS", "MoneyPerSec", "MoneyPerSecond", "Gen", "Generation" }) do
         local a = inst:GetAttribute(k)
         if typeof(a) == "number" and a > 0 then
@@ -94,7 +94,7 @@ local function collectMPSFrom(inst)
         end
     end
 
-    -- 2) Descendants (TextLabel / StringValue / NumberValue, v.v.)
+    -- 2) Descendants
     local ok, descs = pcall(inst.GetDescendants, inst)
     if ok and type(descs) == "table" then
         local step = 0
@@ -187,7 +187,7 @@ local function findBestFromAnimalPodiums()
     if bestInst then
         print("[BrainrotTP] Best from AnimalPodiums:", bestInst:GetFullName(), "MPS =", bestVal)
     else
-        print("[BrainrotTP] Không tìm thấy MPS trong Plots.AnimalPodiums.")
+        print("[BrainrotTP] Không tìm thấy MPS trong Plots.AnimalPodiums, thử fallback toàn map.")
     end
 
     return bestInst, bestVal
@@ -232,7 +232,7 @@ local function findStrongestPet()
     return findBestFromWorkspace()
 end
 
--- ================== UseItem remote ==================
+-- ================== Net / remotes ==================
 local Net = nil
 do
     local okP, Packages = pcall(function()
@@ -243,6 +243,58 @@ do
             Net = require(Packages:WaitForChild("Net", 5))
         end)
     end
+end
+
+local function waitForDescendant(root, path, timeoutSec)
+    local cur = root
+    local deadline = os.clock() + (timeoutSec or 5)
+    for _, name in ipairs(path) do
+        repeat
+            local f = cur:FindFirstChild(name)
+            if f then
+                cur = f
+                break
+            end
+            if os.clock() >= deadline then
+                return nil
+            end
+            local added = cur.ChildAdded:Wait()
+            if added.Name == name then
+                cur = added
+                break
+            end
+        until false
+    end
+    return cur
+end
+
+local function getOnTeleport()
+    if Net and Net.RemoteEvent then
+        local ok, re = pcall(function()
+            return Net:RemoteEvent("QuantumCloner/OnTeleport")
+        end)
+        if ok and re then
+            return function(targetCF)
+                re:FireServer(targetCF)
+            end,
+            "Net"
+        end
+    end
+    local reObj = waitForDescendant(
+        ReplicatedStorage,
+        { "Packages", "Net", "RE", "QuantumCloner", "OnTeleport" },
+        5
+    )
+    if reObj and reObj:IsA("RemoteEvent") then
+        return function(targetCF)
+            reObj:FireServer(targetCF)
+        end,
+        "REPath"
+    end
+    return function()
+        warn("[BrainrotTP] OnTeleport remote not found.")
+    end,
+    "None"
 end
 
 local function getUseItem()
@@ -261,6 +313,7 @@ local function getUseItem()
     end
 end
 
+local fireTeleport, _via = getOnTeleport()
 local fireUseItem = getUseItem()
 
 -- ================== Ping + debounce + clone check ==================
@@ -288,7 +341,7 @@ local function cloneExists()
     return workspace:FindFirstChild(("%s_Clone"):format(LP.UserId)) ~= nil
 end
 
--- ================== MAIN ACTION: TP + ĐỢI RẤT NGẮN + SPAM DROP ==================
+-- ================== MAIN ACTION: TP remote + chờ ngắn + spam drop ==================
 local function doTpAndDrop()
     local inst, bestVal = findStrongestPet()
     if not inst then
@@ -313,34 +366,38 @@ local function doTpAndDrop()
         return
     end
 
-    -- 1) TP client tới podium
+    -- 1) TP bằng remote chính chủ + set CFrame client hỗ trợ
+    fireTeleport(cf)
     hrp.CFrame = cf + Vector3.new(0, 3, 0)
 
-    -- 2) ĐỢI RẤT NGẮN THEO PING (cho server cập nhật vị trí mới)
-    --    làm sát hơn: min 0.08s, max 0.20s
-    local delay = math.clamp(getPingSec() * 0.3, 0.08, 0.20)
+    -- 2) ĐỢI THEO PING (rất ngắn) cho server kịp nhận vị trí mới
+    --    nếu ping thấp ~50ms thì ~0.08s; ping cao thì tối đa 0.30s
+    local delay = math.clamp(getPingSec() * 0.9, 0.08, 0.30)
     task.wait(delay)
 
-    -- 3) Vừa giữ player dính podium, vừa spam UseItem trong 0.18–0.45s
+    -- 3) Spam UseItem trong thời gian ngắn (0.2–0.5s)
     local start = os.clock()
-    local duration = math.clamp(getPingSec() * 0.8, 0.18, 0.45)
+    local duration = math.clamp(getPingSec() * 1.0, 0.20, 0.50)
 
     while os.clock() - start < duration do
-        -- "ghim" player tại vị trí podium để hạn chế bị kéo lệch
-        hrp.CFrame = cf + Vector3.new(0, 3, 0)
-
         fireUseItem()
         RunService.Heartbeat:Wait()
-
         if cloneExists() then
             break
         end
     end
 
-    -- 4) Thêm 1 phát dự phòng ngay sau đó
+    -- 4) 1 phát dự phòng
     if not cloneExists() then
         fireUseItem()
     end
+end
+
+local function tpAndDropClone()
+    if not notCoolingDown(2.5) then
+        return
+    end
+    task.spawn(doTpAndDrop)
 end
 
 -- ================== Keybind T + CAS button ==================
@@ -376,4 +433,4 @@ ContextActionService:BindAction(
 ContextActionService:SetTitle("BrainrotStrongTP", "CLONE")
 ContextActionService:SetPosition("BrainrotStrongTP", UDim2.new(1, -120, 1, -150))
 
-print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới podium MPS cao nhất và drop clone đúng chỗ.")
+print("[BrainrotTP] Loaded. Press T or tap CLONE để auto TP tới podium MPS cao nhất và drop clone sau TP.")
