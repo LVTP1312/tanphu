@@ -416,28 +416,3 @@ spawn(function()
         end
     end
 end)
-
---==================================================
--- 🧪 TEST AUTO JOIN (chỉ dùng để test – muốn bỏ thì xóa block này)
---   • Trong 30s nếu bạn bật Auto Join = ON
---   • Nó sẽ tạo pet TEST_AUTOJOIN và thử teleport tới chính job hiện tại
---==================================================
-task.spawn(function()
-    local start = tick()
-    local timeout = 30  -- 30s cho bạn bật Auto Join
-
-    while tick() - start < timeout do
-        if autoJoinEnabled then
-            local fakeName  = "TEST_AUTOJOIN"
-            local fakeMps   = 3000000     -- 3M
-            local fakeJobId = game.JobId
-
-            warn("✅ TEST AUTO JOIN: đang gọi processPet với TEST_AUTOJOIN...")
-            processPet(fakeName, fakeMps, fakeJobId)
-            return
-        end
-        task.wait(1)
-    end
-
-    warn("⌛ TEST AUTO JOIN: hết thời gian 30s mà Auto Join vẫn OFF, không test nữa.")
-end)
