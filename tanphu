@@ -1,13 +1,13 @@
 --==================================================
--- ⏳ ĐỢI GAME LOAD + CHỐNG CHẠY TRÙNG
+-- ⏳ ĐỢI GAME LOAD + CHỐNG CHẠY TRÙNG (v3)
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinderLoaded then
-    warn("TanPhuPetsFinder đã chạy, không chạy lại.")
+if _G.TanPhuPetsFinder_v3_Loaded then
+    warn("TanPhuPetsFinder v3 đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinderLoaded = true
+_G.TanPhuPetsFinder_v3_Loaded = true
 
 --==================================================
 -- 🔧 SERVICES
@@ -40,7 +40,7 @@ local function doRequest(opts)
 end
 
 --==================================================
--- 📦 HÀNG ĐỢI GỬI WEBHOOK (đỡ spam)
+-- 📦 HÀNG ĐỢI GỬI WEBHOOK
 --==================================================
 local sendQueue = {}
 local sending = false
@@ -145,8 +145,11 @@ local function shouldNotify(petName, mps)
 end
 
 --==================================================
--- 🎨 UI: TanPhu freehub | Pets Finder
+-- 🎨 UI: TanPhu freehub | Pets Finder (đẹp hơn + Auto Join)
 --==================================================
+local autoJoinEnabled = false
+local autoJoinedJobs  = {}
+
 local function createUI()
     local ScreenGui = Instance.new("ScreenGui")
     ScreenGui.Name = "TanPhuPetsFinder"
@@ -154,32 +157,129 @@ local function createUI()
     ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
     local Frame = Instance.new("Frame")
-    Frame.Size = UDim2.new(0, 420, 0, 360)
-    Frame.Position = UDim2.new(0.5, -210, 0.5, -180)
-    Frame.BackgroundColor3 = Color3.fromRGB(18,18,20)
+    Frame.Size = UDim2.new(0, 450, 0, 380)
+    Frame.Position = UDim2.new(0.5, -225, 0.5, -190)
+    Frame.BackgroundColor3 = Color3.fromRGB(15,15,18)
     Frame.BorderSizePixel = 0
     Frame.Active = true
     Frame.Draggable = true
     Frame.Parent = ScreenGui
 
+    local FrameCorner = Instance.new("UICorner")
+    FrameCorner.CornerRadius = UDim.new(0, 10)
+    FrameCorner.Parent = Frame
+
+    local FrameStroke = Instance.new("UIStroke")
+    FrameStroke.Thickness = 1.5
+    FrameStroke.Color = Color3.fromRGB(0, 180, 255)
+    FrameStroke.Transparency = 0.4
+    FrameStroke.Parent = Frame
+
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 42)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(20,20,26)
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = Frame
+
+    local TitleCorner = Instance.new("UICorner")
+    TitleCorner.CornerRadius = UDim.new(0, 10)
+    TitleCorner.Parent = TitleBar
+
     local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, 0, 0, 40)
-    Title.BackgroundColor3 = Color3.fromRGB(28,28,35)
-    Title.BorderSizePixel = 0
+    Title.Size = UDim2.new(1, -20, 1, 0)
+    Title.Position = UDim2.new(0, 10, 0, 0)
+    Title.BackgroundTransparency = 1
     Title.Text = "TanPhu freehub | Pets Finder"
-    Title.TextColor3 = Color3.fromRGB(0,255,255)
+    Title.TextColor3 = Color3.fromRGB(0, 255, 255)
     Title.Font = Enum.Font.GothamBold
     Title.TextSize = 18
-    Title.Parent = Frame
+    Title.Parent = TitleBar
 
+    local TitleGradient = Instance.new("UIGradient")
+    TitleGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 255, 200)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 180, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 0, 255)),
+    })
+    TitleGradient.Rotation = 0
+    TitleGradient.Parent = Title
+
+    -- Thanh control dưới title
+    local ControlBar = Instance.new("Frame")
+    ControlBar.Size = UDim2.new(1, -20, 0, 32)
+    ControlBar.Position = UDim2.new(0, 10, 0, 48)
+    ControlBar.BackgroundColor3 = Color3.fromRGB(19,19,24)
+    ControlBar.BorderSizePixel = 0
+    ControlBar.Parent = Frame
+
+    local ControlCorner = Instance.new("UICorner")
+    ControlCorner.CornerRadius = UDim.new(0, 8)
+    ControlCorner.Parent = ControlBar
+
+    local AutoJoinLabel = Instance.new("TextLabel")
+    AutoJoinLabel.Size = UDim2.new(0, 120, 1, 0)
+    AutoJoinLabel.Position = UDim2.new(0, 10, 0, 0)
+    AutoJoinLabel.BackgroundTransparency = 1
+    AutoJoinLabel.Text = "Auto Join:"
+    AutoJoinLabel.Font = Enum.Font.GothamSemibold
+    AutoJoinLabel.TextSize = 14
+    AutoJoinLabel.TextColor3 = Color3.fromRGB(220,220,230)
+    AutoJoinLabel.TextXAlignment = Enum.TextXAlignment.Left
+    AutoJoinLabel.Parent = ControlBar
+
+    local AutoJoinButton = Instance.new("TextButton")
+    AutoJoinButton.Size = UDim2.new(0, 90, 0, 26)
+    AutoJoinButton.Position = UDim2.new(0, 110, 0.5, -13)
+    AutoJoinButton.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    AutoJoinButton.BorderSizePixel = 0
+    AutoJoinButton.Text = "OFF"
+    AutoJoinButton.Font = Enum.Font.GothamBold
+    AutoJoinButton.TextSize = 14
+    AutoJoinButton.TextColor3 = Color3.fromRGB(255,255,255)
+    AutoJoinButton.Parent = ControlBar
+
+    local AutoJoinCorner = Instance.new("UICorner")
+    AutoJoinCorner.CornerRadius = UDim.new(0, 8)
+    AutoJoinCorner.Parent = AutoJoinButton
+
+    local AutoJoinStroke = Instance.new("UIStroke")
+    AutoJoinStroke.Thickness = 1.4
+    AutoJoinStroke.Color = Color3.fromRGB(200, 60, 60)
+    AutoJoinStroke.Transparency = 0.2
+    AutoJoinStroke.Parent = AutoJoinButton
+
+    local function updateAutoJoinVisual()
+        if autoJoinEnabled then
+            AutoJoinButton.BackgroundColor3 = Color3.fromRGB(0, 170, 90)
+            AutoJoinStroke.Color = Color3.fromRGB(0, 255, 140)
+            AutoJoinButton.Text = "ON"
+        else
+            AutoJoinButton.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+            AutoJoinStroke.Color = Color3.fromRGB(200, 60, 60)
+            AutoJoinButton.Text = "OFF"
+        end
+    end
+    updateAutoJoinVisual()
+
+    AutoJoinButton.MouseButton1Click:Connect(function()
+        autoJoinEnabled = not autoJoinEnabled
+        updateAutoJoinVisual()
+    end)
+
+    -- Scrolling list
     local Scrolling = Instance.new("ScrollingFrame")
-    Scrolling.Size = UDim2.new(1, 0, 1, -40)
-    Scrolling.Position = UDim2.new(0, 0, 0, 40)
+    Scrolling.Size = UDim2.new(1, -20, 1, -92)
+    Scrolling.Position = UDim2.new(0, 10, 0, 88)
     Scrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
     Scrolling.ScrollBarThickness = 6
-    Scrolling.BackgroundTransparency = 1
+    Scrolling.BackgroundColor3 = Color3.fromRGB(12,12,16)
+    Scrolling.BackgroundTransparency = 0.1
     Scrolling.BorderSizePixel = 0
     Scrolling.Parent = Frame
+
+    local ScrollingCorner = Instance.new("UICorner")
+    ScrollingCorner.CornerRadius = UDim.new(0, 8)
+    ScrollingCorner.Parent = Scrolling
 
     local UIListLayout = Instance.new("UIListLayout")
     UIListLayout.Padding = UDim.new(0,8)
@@ -196,39 +296,49 @@ end
 local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
 
 --==================================================
--- 🧱 THÊM ITEM VÀO UI
+-- 🧱 THÊM ITEM VÀO UI (đẹp hơn)
 --==================================================
-local function AddPetItem(petName, mps, jobId)
+local function AddPetItem(petName, mps, jobId, isTargetFlag)
     local Item = Instance.new("Frame")
-    Item.Size = UDim2.new(1, -10, 0, 40)
-    Item.BackgroundColor3 = Color3.fromRGB(32,32,38)
+    Item.Size = UDim2.new(1, -8, 0, 42)
+    Item.BackgroundColor3 = isTargetFlag and Color3.fromRGB(32,40,55) or Color3.fromRGB(26,26,32)
     Item.BorderSizePixel = 0
     Item.Parent = Scrolling
 
+    local ItemCorner = Instance.new("UICorner")
+    ItemCorner.CornerRadius = UDim.new(0, 8)
+    ItemCorner.Parent = Item
+
+    local ItemStroke = Instance.new("UIStroke")
+    ItemStroke.Thickness = 1
+    ItemStroke.Color = isTargetFlag and Color3.fromRGB(0, 200, 255) or Color3.fromRGB(80,80,90)
+    ItemStroke.Transparency = isTargetFlag and 0.15 or 0.4
+    ItemStroke.Parent = Item
+
     local Name = Instance.new("TextLabel")
-    Name.Size = UDim2.new(0.6, 0, 1, 0)
+    Name.Size = UDim2.new(0.55, 0, 1, 0)
+    Name.Position = UDim2.new(0, 10, 0, 0)
     Name.BackgroundTransparency = 1
     Name.Text = tostring(petName)
     Name.Font = Enum.Font.GothamMedium
     Name.TextColor3 = Color3.fromRGB(255,255,255)
     Name.TextSize = 14
     Name.TextXAlignment = Enum.TextXAlignment.Left
-    Name.Position = UDim2.new(0, 10, 0, 0)
     Name.Parent = Item
 
     local Farm = Instance.new("TextLabel")
     Farm.Size = UDim2.new(0.2, 0, 1, 0)
-    Farm.Position = UDim2.new(0.6, 0, 0, 0)
+    Farm.Position = UDim2.new(0.55, 0, 0, 0)
     Farm.BackgroundTransparency = 1
     Farm.Text = tostring(mps) .. "/s"
-    Farm.TextColor3 = Color3.fromRGB(180,180,180)
+    Farm.TextColor3 = Color3.fromRGB(180,180,190)
     Farm.Font = Enum.Font.Gotham
-    Farm.TextSize = 14
+    Farm.TextSize = 13
     Farm.Parent = Item
 
     local Join = Instance.new("TextButton")
-    Join.Size = UDim2.new(0.2, -10, 0, 28)
-    Join.Position = UDim2.new(0.8, 0, 0.5, -14)
+    Join.Size = UDim2.new(0.2, -10, 0, 30)
+    Join.Position = UDim2.new(0.8, 0, 0.5, -15)
     Join.BackgroundColor3 = Color3.fromRGB(0,140,255)
     Join.Text = "Join"
     Join.TextColor3 = Color3.fromRGB(255,255,255)
@@ -237,20 +347,36 @@ local function AddPetItem(petName, mps, jobId)
     Join.AutoButtonColor = true
     Join.Parent = Item
 
+    local JoinCorner = Instance.new("UICorner")
+    JoinCorner.CornerRadius = UDim.new(0, 8)
+    JoinCorner.Parent = Join
+
     Join.MouseButton1Click:Connect(function()
         TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
     end)
 end
 
 --==================================================
--- 📤 PROCESS 1 PET → UI + WEBHOOK
+-- 📤 PROCESS 1 PET → UI + WEBHOOK + AUTO JOIN (nếu bật)
 --==================================================
 local function processPet(petName, mps, jobId)
     if not shouldSendOnce(petName, jobId) then
         return
     end
 
-    AddPetItem(petName, mps, jobId)
+    local isTargetFlag = isTarget(petName)
+    AddPetItem(petName, mps, jobId, isTargetFlag)
+
+    -- Auto join: mỗi job chỉ auto join 1 lần
+    if autoJoinEnabled then
+        jobId = tostring(jobId or "")
+        if jobId ~= "" and not autoJoinedJobs[jobId] then
+            autoJoinedJobs[jobId] = true
+            pcall(function()
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
+            end)
+        end
+    end
 
     local placeId = game.PlaceId
     local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
@@ -268,7 +394,7 @@ local function processPet(petName, mps, jobId)
 end
 
 --==================================================
--- 🔁 SCAN workspace.Pets MỖI 2s (ĐÃ BỎ continue)
+-- 🔁 SCAN workspace.Pets MỖI 2s
 --==================================================
 spawn(function()
     while task.wait(2) do
@@ -292,13 +418,26 @@ spawn(function()
 end)
 
 --==================================================
--- 🔔 TEST_NOTIFY: TỰ THÊM 1 DÒNG SAU 5s ĐỂ BẠN THẤY RÕ
---   Nếu cái này không hiện lên UI + Discord thì là do HTTP/webhook/bypass
+-- 🧪 TEST AUTO JOIN (chỉ dùng để test – muốn bỏ thì xóa block này)
+--   • Trong 30s nếu bạn bật Auto Join = ON
+--   • Nó sẽ tạo pet TEST_AUTOJOIN và thử teleport tới chính job hiện tại
 --==================================================
-task.delay(5, function()
-    local fakeName  = "TEST_PET_INTERNAL"
-    local fakeMps   = 3000000      -- 3M
-    local fakeJobId = game.JobId
-    processPet(fakeName, fakeMps, fakeJobId)
-    warn("✅ Đã gửi TEST_PET_INTERNAL (3M) để test UI + webhook.")
+task.spawn(function()
+    local start = tick()
+    local timeout = 30  -- 30s cho bạn bật Auto Join
+
+    while tick() - start < timeout do
+        if autoJoinEnabled then
+            local fakeName  = "TEST_AUTOJOIN"
+            local fakeMps   = 3000000     -- 3M
+            local fakeJobId = game.JobId
+
+            warn("✅ TEST AUTO JOIN: đang gọi processPet với TEST_AUTOJOIN...")
+            processPet(fakeName, fakeMps, fakeJobId)
+            return
+        end
+        task.wait(1)
+    end
+
+    warn("⌛ TEST AUTO JOIN: hết thời gian 30s mà Auto Join vẫn OFF, không test nữa.")
 end)
