@@ -1,53 +1,75 @@
 --==================================================
--- ⏳ ĐỢI GAME LOAD
+-- ⏳ ĐỢI GAME LOAD + CHỐNG CHẠY TRÙNG
 --==================================================
 repeat task.wait() until game:IsLoaded()
+
+if _G.TanPhuPetsFinderLoaded then
+    warn("TanPhuPetsFinder đã chạy, không chạy lại.")
+    return
+end
+_G.TanPhuPetsFinderLoaded = true
 
 --==================================================
 -- 🔧 SERVICES
 --==================================================
-local Players      = game:GetService("Players")
-local HttpService  = game:GetService("HttpService")
+local Players         = game:GetService("Players")
+local HttpService     = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
-local StarterGui   = game:GetService("StarterGui")
-local LocalPlayer  = Players.LocalPlayer
+local LocalPlayer     = Players.LocalPlayer
 
 --==================================================
 -- ⚙️ HTTP REQUEST (tự chọn impl)
 --==================================================
-local http_request_impl = nil
-if typeof(syn) == "table" and typeof(syn.request) == "function" then
-    http_request_impl = syn.request
-elseif typeof(http_request) == "function" then
-    http_request_impl = http_request
-elseif typeof(request) == "function" then
-    http_request_impl = request
-elseif typeof(http) == "table" and typeof(http.request) == "function" then
-    http_request_impl = http.request
-end
+local http_request_impl =
+    (typeof(syn) == "table" and typeof(syn.request) == "function" and syn.request)
+    or (typeof(http_request) == "function" and http_request)
+    or (typeof(request) == "function" and request)
+    or (typeof(http) == "table" and typeof(http.request) == "function" and http.request)
 
 local function doRequest(opts)
-    if http_request_impl then
-        local ok, err = pcall(function()
-            http_request_impl(opts)
-        end)
-        if not ok then
-            warn("HTTP error:", err)
-        end
-    elseif syn and syn.request then
-        local ok, err = pcall(function()
-            syn.request(opts)
-        end)
-        if not ok then
-            warn("Syn request error:", err)
-        end
-    else
+    if not http_request_impl then
         warn("❌ Không tìm thấy HTTP request (syn/http_request/request/http.request)")
+        return
+    end
+    local ok, err = pcall(function()
+        http_request_impl(opts)
+    end)
+    if not ok then
+        warn("HTTP error:", err)
     end
 end
 
 --==================================================
--- ⚙️ LOCAL TARGETS (pet) cho hệ webhook mới
+-- 📦 HÀNG ĐỢI GỬI WEBHOOK (đỡ spam)
+--==================================================
+local sendQueue = {}
+local sending = false
+
+local function processQueue()
+    if sending then return end
+    sending = true
+
+    while #sendQueue > 0 do
+        local item = table.remove(sendQueue, 1)
+        doRequest({
+            Url = item.url,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = HttpService:JSONEncode(item.payload)
+        })
+        task.wait(0.4)
+    end
+
+    sending = false
+end
+
+local function safeSend(url, payload)
+    table.insert(sendQueue, { url = url, payload = payload })
+    task.spawn(processQueue)
+end
+
+--==================================================
+-- 🎯 LOCAL TARGETS (PETS)
 --==================================================
 local targets = {
     'Chipso and Queso','La Casa Boo','Tang Tang Keletang','Headless Horseman',
@@ -65,15 +87,6 @@ local targets = {
     'Captiano Moby','La Taco Combinasion','Los Puggies','Los Spaghettis','Fragrama and Chocrama','Orcaledon','Swag Soda'
 }
 
---==================================================
--- ⚙️ GIỚI HẠN CHỈ THÔNG BÁO ≤ 50M
---==================================================
-local MAX_NOTIFY_MPS = 50_000_000   -- 50M
-local MIN_NOTIFY_MPS = 5_000_000    -- 5M (ngưỡng generic MPS)
-
---==================================================
--- ⚙️ HÀM MATCH TÊN TARGET (case-insensitive)
---==================================================
 local function isTarget(name)
     local n = string.lower(name or "")
     for _, t in ipairs(targets) do
@@ -85,20 +98,26 @@ local function isTarget(name)
 end
 
 --==================================================
--- ⚙️ WEBHOOK LINKS
+-- 💰 NGƯỠNG MPS
+--==================================================
+local MAX_NOTIFY_MPS  = 50000000   -- 50M
+local GENERIC_MIN_MPS = 2000000    -- 2M
+
+--==================================================
+-- 🌐 WEBHOOKS
 --==================================================
 local webhook_high    = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_index   = webhook_high
 local webhook_special = webhook_high
 
 --==================================================
--- ⚙️ CHỐNG SPAM (petName + jobId)
+-- 🚫 CHỐNG SPAM (petName + jobId)
 --==================================================
 local sent = {}
 
 local function shouldSendOnce(petName, jobId)
     petName = tostring(petName or "Unknown")
-    jobId = tostring(jobId or "0")
+    jobId   = tostring(jobId or "0")
     local key = string.lower(petName) .. "_" .. jobId
     if sent[key] then
         return false
@@ -108,29 +127,20 @@ local function shouldSendOnce(petName, jobId)
 end
 
 --==================================================
--- ⚙️ QUY TẮC NÊN THÔNG BÁO
---   - Chặn tất cả pet có MPS > 50M
---   - Nếu tên nằm trong TARGETS → báo (miễn là ≤ 50M)
---   - Hoặc MPS từ 5M → 50M (pet thường)
+-- 📌 QUY TẮC NÊN THÔNG BÁO
 --==================================================
 local function shouldNotify(petName, mps)
     mps = tonumber(mps) or 0
 
-    -- Chặn mọi pet > 50M
     if mps > MAX_NOTIFY_MPS then
         return false
     end
-
-    -- Pet trong danh sách targets (dù MPS < 5M vẫn báo, miễn không vượt 50M)
     if isTarget(petName) then
         return true
     end
-
-    -- Pet thường nhưng MPS trong khoảng 5M → 50M
-    if mps >= MIN_NOTIFY_MPS then
+    if mps >= GENERIC_MIN_MPS then
         return true
     end
-
     return false
 end
 
@@ -176,7 +186,6 @@ local function createUI()
     UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
     UIListLayout.Parent = Scrolling
 
-    -- Auto update CanvasSize khi list thay đổi
     UIListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
         Scrolling.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 20)
     end)
@@ -187,7 +196,7 @@ end
 local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
 
 --==================================================
--- 🔹 Function tạo 1 item trong UI
+-- 🧱 THÊM ITEM VÀO UI
 --==================================================
 local function AddPetItem(petName, mps, jobId)
     local Item = Instance.new("Frame")
@@ -199,7 +208,7 @@ local function AddPetItem(petName, mps, jobId)
     local Name = Instance.new("TextLabel")
     Name.Size = UDim2.new(0.6, 0, 1, 0)
     Name.BackgroundTransparency = 1
-    Name.Text = petName
+    Name.Text = tostring(petName)
     Name.Font = Enum.Font.GothamMedium
     Name.TextColor3 = Color3.fromRGB(255,255,255)
     Name.TextSize = 14
@@ -234,62 +243,62 @@ local function AddPetItem(petName, mps, jobId)
 end
 
 --==================================================
--- 📤 GỬI WEBHOOK 1 PET (PROCESS)
+-- 📤 PROCESS 1 PET → UI + WEBHOOK
 --==================================================
 local function processPet(petName, mps, jobId)
     if not shouldSendOnce(petName, jobId) then
         return
     end
 
-    -- Thêm vào UI
     AddPetItem(petName, mps, jobId)
 
-    -- Gửi webhook đơn giản
-    local data = {
-        content =
-            "🔔 **Pet Found!**\n" ..
-            "🐾 Name: " .. tostring(petName) .. "\n" ..
-            "💸 MPS: " .. tostring(mps) .. "\n" ..
-            "🆔 Job ID: `" .. tostring(jobId) .. "`",
-    }
+    local placeId = game.PlaceId
+    local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
+        :format(placeId, jobId)
 
-    doRequest({
-        Url = webhook_high,
-        Method = "POST",
-        Headers = { ["Content-Type"] = "application/json" },
-        Body = HttpService:JSONEncode(data)
-    })
+    local content = table.concat({
+        "🔔 **Pet Found!**",
+        "🐾 Name: " .. tostring(petName),
+        "💸 MPS: " .. tostring(mps),
+        "🆔 Job ID: `" .. tostring(jobId) .. "`",
+        "🌐 [JOIN HERE](" .. joinLink .. ")"
+    }, "\n")
+
+    safeSend(webhook_high, { content = content })
 end
 
 --==================================================
--- 🔁 SCAN PET + JOB ID TỰ ĐỘNG (2s/lần)
+-- 🔁 SCAN workspace.Pets MỖI 2s (ĐÃ BỎ continue)
 --==================================================
 spawn(function()
     while task.wait(2) do
         local jobId = game.JobId
         local petsFolder = workspace:FindFirstChild("Pets")
+        if petsFolder then
+            for _, pet in ipairs(petsFolder:GetChildren()) do
+                local petName = pet.Name or "Unknown"
+                local mpsValue = 0
+                local mpsObj = pet:FindFirstChild("MPS")
+                if mpsObj and mpsObj.Value then
+                    mpsValue = tonumber(mpsObj.Value) or 0
+                end
 
-        if not petsFolder then
-            -- nếu game khác structure, khỏi crash
-            continue
-        end
-
-        for _, pet in ipairs(petsFolder:GetChildren()) do
-            local petName = pet.Name or "Unknown"
-            local mpsValue = 0
-            local mpsObj = pet:FindFirstChild("MPS")
-
-            if mpsObj and mpsObj.Value then
-                mpsValue = tonumber(mpsObj.Value) or 0
-            end
-
-            if shouldNotify(petName, mpsValue) then
-                processPet(petName, mpsValue, jobId)
+                if shouldNotify(petName, mpsValue) then
+                    processPet(petName, mpsValue, jobId)
+                end
             end
         end
     end
 end)
 
 --==================================================
--- ✅ Script chạy ẩn, chỉ hiện GUI + gửi webhook khi tìm được pet hợp lệ
+-- 🔔 TEST_NOTIFY: TỰ THÊM 1 DÒNG SAU 5s ĐỂ BẠN THẤY RÕ
+--   Nếu cái này không hiện lên UI + Discord thì là do HTTP/webhook/bypass
 --==================================================
+task.delay(5, function()
+    local fakeName  = "TEST_PET_INTERNAL"
+    local fakeMps   = 3000000      -- 3M
+    local fakeJobId = game.JobId
+    processPet(fakeName, fakeMps, fakeJobId)
+    warn("✅ Đã gửi TEST_PET_INTERNAL (3M) để test UI + webhook.")
+end)
