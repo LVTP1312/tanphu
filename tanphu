@@ -1,13 +1,13 @@
 --==================================================
--- ⏳ ĐỢI GAME LOAD + CHỐNG CHẠY TRÙNG (v3)
+-- ⏳ ĐỢI GAME LOAD + CHỐNG CHẠY TRÙNG (v4)
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v3_Loaded then
-    warn("TanPhuPetsFinder v3 đã chạy, không chạy lại.")
+if _G.TanPhuPetsFinder_v4_Loaded then
+    warn("TanPhuPetsFinder v4 đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v3_Loaded = true
+_G.TanPhuPetsFinder_v4_Loaded = true
 
 --==================================================
 -- 🔧 SERVICES
@@ -100,7 +100,7 @@ end
 --==================================================
 -- 💰 NGƯỠNG MPS
 --==================================================
-local MAX_NOTIFY_MPS  = 50000000   -- 50M
+local MAX_NOTIFY_MPS  = 50000000   -- 50M (cho webhook_high)
 local GENERIC_MIN_MPS = 2000000    -- 2M
 
 --==================================================
@@ -109,6 +109,9 @@ local GENERIC_MIN_MPS = 2000000    -- 2M
 local webhook_high    = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_index   = webhook_high
 local webhook_special = webhook_high
+
+-- 👉 Webhook thứ 2: gửi TẤT CẢ pet > 50M
+local webhook_over50  = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
 --==================================================
 -- 🚫 CHỐNG SPAM (petName + jobId)
@@ -127,12 +130,12 @@ local function shouldSendOnce(petName, jobId)
 end
 
 --==================================================
--- 📌 QUY TẮC NÊN THÔNG BÁO
+-- 📌 QUY TẮC NÊN THÔNG BÁO CHO WEBHOOK_HIGH (≤ 50M)
 --==================================================
-local function shouldNotify(petName, mps)
+local function shouldNotifyMain(petName, mps)
     mps = tonumber(mps) or 0
 
-    if mps > MAX_NOTIFY_MPS then
+    if mps <= 0 or mps > MAX_NOTIFY_MPS then
         return false
     end
     if isTarget(petName) then
@@ -145,7 +148,7 @@ local function shouldNotify(petName, mps)
 end
 
 --==================================================
--- 🎨 UI: TanPhu freehub | Pets Finder (đẹp hơn + Auto Join)
+-- 🎨 UI: TanPhu freehub | Pets Finder (đẹp + Auto Join)
 --==================================================
 local autoJoinEnabled = false
 local autoJoinedJobs  = {}
@@ -296,12 +299,18 @@ end
 local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
 
 --==================================================
--- 🧱 THÊM ITEM VÀO UI (đẹp hơn)
+-- 🧱 THÊM ITEM VÀO UI
 --==================================================
-local function AddPetItem(petName, mps, jobId, isTargetFlag)
+local function AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
     local Item = Instance.new("Frame")
     Item.Size = UDim2.new(1, -8, 0, 42)
-    Item.BackgroundColor3 = isTargetFlag and Color3.fromRGB(32,40,55) or Color3.fromRGB(26,26,32)
+
+    if isOver50 then
+        Item.BackgroundColor3 = Color3.fromRGB(55, 26, 26)     -- đỏ sẫm cho >50M
+    else
+        Item.BackgroundColor3 = isTargetFlag and Color3.fromRGB(32,40,55) or Color3.fromRGB(26,26,32)
+    end
+
     Item.BorderSizePixel = 0
     Item.Parent = Scrolling
 
@@ -311,8 +320,13 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag)
 
     local ItemStroke = Instance.new("UIStroke")
     ItemStroke.Thickness = 1
-    ItemStroke.Color = isTargetFlag and Color3.fromRGB(0, 200, 255) or Color3.fromRGB(80,80,90)
-    ItemStroke.Transparency = isTargetFlag and 0.15 or 0.4
+    if isOver50 then
+        ItemStroke.Color = Color3.fromRGB(255, 80, 80)
+        ItemStroke.Transparency = 0.1
+    else
+        ItemStroke.Color = isTargetFlag and Color3.fromRGB(0, 200, 255) or Color3.fromRGB(80,80,90)
+        ItemStroke.Transparency = isTargetFlag and 0.15 or 0.4
+    end
     ItemStroke.Parent = Item
 
     local Name = Instance.new("TextLabel")
@@ -331,7 +345,7 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag)
     Farm.Position = UDim2.new(0.55, 0, 0, 0)
     Farm.BackgroundTransparency = 1
     Farm.Text = tostring(mps) .. "/s"
-    Farm.TextColor3 = Color3.fromRGB(180,180,190)
+    Farm.TextColor3 = isOver50 and Color3.fromRGB(255, 200, 200) or Color3.fromRGB(180,180,190)
     Farm.Font = Enum.Font.Gotham
     Farm.TextSize = 13
     Farm.Parent = Item
@@ -339,7 +353,7 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag)
     local Join = Instance.new("TextButton")
     Join.Size = UDim2.new(0.2, -10, 0, 30)
     Join.Position = UDim2.new(0.8, 0, 0.5, -15)
-    Join.BackgroundColor3 = Color3.fromRGB(0,140,255)
+    Join.BackgroundColor3 = isOver50 and Color3.fromRGB(200, 40, 40) or Color3.fromRGB(0,140,255)
     Join.Text = "Join"
     Join.TextColor3 = Color3.fromRGB(255,255,255)
     Join.Font = Enum.Font.GothamBold
@@ -357,18 +371,23 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag)
 end
 
 --==================================================
--- 📤 PROCESS 1 PET → UI + WEBHOOK + AUTO JOIN (nếu bật)
+-- 📤 PROCESS PET → UI + WEBHOOK + AUTOJOIN (tùy)
+--   allowAutoJoin = true cho webhook_high, false cho webhook_over50
 --==================================================
-local function processPet(petName, mps, jobId)
+local autoJoinedJobs  = {}
+local function processPet(petName, mps, jobId, webhookUrl, allowAutoJoin, isOver50)
     if not shouldSendOnce(petName, jobId) then
         return
     end
 
-    local isTargetFlag = isTarget(petName)
-    AddPetItem(petName, mps, jobId, isTargetFlag)
+    webhookUrl = webhookUrl or webhook_high
+    allowAutoJoin = allowAutoJoin == nil and true or allowAutoJoin
 
-    -- Auto join: mỗi job chỉ auto join 1 lần
-    if autoJoinEnabled then
+    local isTargetFlag = isTarget(petName)
+    AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
+
+    -- Auto join chỉ cho nhánh allowAutoJoin (<=50M)
+    if allowAutoJoin and autoJoinEnabled then
         jobId = tostring(jobId or "")
         if jobId ~= "" and not autoJoinedJobs[jobId] then
             autoJoinedJobs[jobId] = true
@@ -390,11 +409,13 @@ local function processPet(petName, mps, jobId)
         "🌐 [JOIN HERE](" .. joinLink .. ")"
     }, "\n")
 
-    safeSend(webhook_high, { content = content })
+    safeSend(webhookUrl, { content = content })
 end
 
 --==================================================
 -- 🔁 SCAN workspace.Pets MỖI 2s
+--   • ≤50M → webhook_high (rule cũ)
+--   • >50M → webhook_over50 (tất cả mọi con, không cần target)
 --==================================================
 spawn(function()
     while task.wait(2) do
@@ -409,8 +430,14 @@ spawn(function()
                     mpsValue = tonumber(mpsObj.Value) or 0
                 end
 
-                if shouldNotify(petName, mpsValue) then
-                    processPet(petName, mpsValue, jobId)
+                -- Nhánh chính: 2M–50M + targets ≤50M
+                if shouldNotifyMain(petName, mpsValue) then
+                    processPet(petName, mpsValue, jobId, webhook_high, true, false)
+                end
+
+                -- Nhánh >50M: gửi mọi con lên webhook_over50
+                if mpsValue > MAX_NOTIFY_MPS then
+                    processPet(petName, mpsValue, jobId, webhook_over50, false, true)
                 end
             end
         end
