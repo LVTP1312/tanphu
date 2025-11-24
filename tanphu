@@ -1,13 +1,13 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER v7 – FILTER SMALL / TRASH
+-- ⏳ TANPHU PETS FINDER v8 – ONLY LISTED PETS
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v7_Loaded then
+if _G.TanPhuPetsFinder_v8_Loaded then
     warn("[PetsFinder] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v7_Loaded = true
+_G.TanPhuPetsFinder_v8_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -41,7 +41,7 @@ local function sendWebhook(url, payload)
 end
 
 --==================================================
--- 🎯 TARGET LIST
+-- 🎯 TARGET LIST – CHỈ NHỮNG CON NÀY ĐƯỢC TÍNH
 --==================================================
 local targets = {
     'Chipso and Queso','La Casa Boo','Tang Tang Keletang','Headless Horseman',
@@ -70,7 +70,7 @@ local function isTarget(name)
 end
 
 --==================================================
--- 💰 PARSE MPS (giống script TEST)
+-- 💰 PARSE MPS (y chang script TEST)
 --==================================================
 local function parseMps(raw)
     if raw == nil then return 0 end
@@ -105,18 +105,21 @@ local function formatMpsShort(v)
     end
 end
 
--- thresholds & webhook
-local MAX_NOTIFY_MPS  = 50_000_000   -- 50M
-local GENERIC_MIN_MPS = 2_000_000    -- 2M
+--==================================================
+-- NGƯỠNG & WEBHOOK
+--==================================================
+local MIN_TARGET_MPS = 2_000_000     -- chỉ pet trong list có MPS >= 2M mới tính
+local SPLIT_MPS      = 50_000_000    -- chia webhook ở 50M
 
 local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
+-- chống spam
 local sentHigh = {}
 local sentOver = {}
 
 --==================================================
--- UI + Auto Join
+-- UI + AUTO JOIN
 --==================================================
 local autoJoinEnabled = false
 local autoJoinedJobs  = {}
@@ -263,11 +266,13 @@ end
 
 local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
 
-local function AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
+local function AddPetItem(petName, mps, jobId, isOver50)
+    local isTargetFlag = true  -- vì chỉ gọi cho pet trong list
+
     local Item = Instance.new("Frame")
     Item.Size = UDim2.new(1, -8, 0, 42)
     Item.BackgroundColor3 = isOver50 and Color3.fromRGB(55, 26, 26)
-        or (isTargetFlag and Color3.fromRGB(32,40,55) or Color3.fromRGB(26,26,32))
+        or Color3.fromRGB(32,40,55)
     Item.BorderSizePixel = 0
     Item.Parent = Scrolling
 
@@ -278,8 +283,8 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
     local ItemStroke = Instance.new("UIStroke")
     ItemStroke.Thickness = 1
     ItemStroke.Color = isOver50 and Color3.fromRGB(255, 80, 80)
-        or (isTargetFlag and Color3.fromRGB(0,200,255) or Color3.fromRGB(80,80,90))
-    ItemStroke.Transparency = isOver50 and 0.1 or (isTargetFlag and 0.15 or 0.4)
+        or Color3.fromRGB(0,200,255)
+    ItemStroke.Transparency = isOver50 and 0.1 or 0.15
     ItemStroke.Parent = Item
 
     local Name = Instance.new("TextLabel")
@@ -324,17 +329,15 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
 end
 
 --==================================================
--- LẤY MPS + RAW TEXT TỪ PET (y chang TEST nhưng trả thêm text)
+-- LẤY MPS + TEXT
 --==================================================
 local function getMpsFromPet(pet)
-    -- 1) Value object
     local mpsObj = pet:FindFirstChild("MPS")
     if mpsObj and mpsObj.Value ~= nil then
         local raw = tostring(mpsObj.Value)
         return parseMps(raw), raw
     end
 
-    -- 2) Text trong BillboardGui / SurfaceGui
     local bestText = nil
     for _, d in ipairs(pet:GetDescendants()) do
         if d:IsA("TextLabel") or d:IsA("TextButton") then
@@ -357,9 +360,9 @@ local function getMpsFromPet(pet)
 end
 
 --==================================================
--- MAIN LOOP – SCAN GIỐNG TEST, THÊM FILTER
+-- MAIN LOOP – CHỈ QUÉT PET TRONG LIST
 --==================================================
-warn("[PetsFinder] ✅ v7 started.")
+warn("[PetsFinder] ✅ v8 started.")
 
 spawn(function()
     while task.wait(3) do
@@ -380,38 +383,26 @@ spawn(function()
         end
 
         for _, pet in ipairs(candidates) do
-            local name       = pet.Name or "Unknown"
-            local mps, raw   = getMpsFromPet(pet)
+            local name = pet.Name or "Unknown"
 
-            if mps <= 0 then
+            -- ❌ bỏ tất cả những gì KHÔNG nằm trong danh sách brainrot
+            if not isTarget(name) then
                 continue
             end
 
-            local key        = string.lower(name) .. "_" .. jobId
-            local targetFlag = isTarget(name)
-
-            local hasSuffix = false
-            if raw then
-                local up = raw:upper()
-                if up:find("M") or up:find("B") or up:find("K") then
-                    hasSuffix = true
-                end
-            end
-
-            -- RULE:
-            --  • target -> luôn lọc bằng mps > 0
-            --  • non-target -> chỉ chấp nhận khi (mps >= 2M) HOẶC (raw có M/B/K)
-            local isBigEnough = targetFlag or hasSuffix or (mps >= GENERIC_MIN_MPS)
-            if not isBigEnough then
-                -- mấy con 7/s, 75/s sẽ rơi vào đây -> bỏ qua
+            local mps = select(1, getMpsFromPet(pet))
+            if mps <= MIN_TARGET_MPS then
+                -- pet trong list nhưng MPS nhỏ hơn 2M -> bỏ qua luôn
                 continue
             end
 
-            -- ===== WEBHOOK HIGH: target + big (2M→50M) =====
-            if mps <= MAX_NOTIFY_MPS then
+            local key = string.lower(name) .. "_" .. jobId
+
+            -- ===== NHÁNH ≤ 50M (webhook_high + auto join) =====
+            if mps <= SPLIT_MPS then
                 if not sentHigh[key] then
                     sentHigh[key] = true
-                    AddPetItem(name, mps, jobId, targetFlag, false)
+                    AddPetItem(name, mps, jobId, false)
 
                     if autoJoinEnabled and not autoJoinedJobs[jobId] then
                         autoJoinedJobs[jobId] = true
@@ -424,7 +415,7 @@ spawn(function()
                         :format(placeId, jobId)
 
                     local content = table.concat({
-                        "🔔 **Pet Found! (≤50M)**",
+                        "🔔 **Pet Found! (Brainrot, ≤50M)**",
                         "🐾 Name: " .. name,
                         "💸 MPS: " .. formatMpsShort(mps) .. "/s",
                         "🆔 Job ID: `" .. jobId .. "`",
@@ -433,19 +424,17 @@ spawn(function()
 
                     sendWebhook(webhook_high, { content = content })
                 end
-            end
-
-            -- ===== WEBHOOK OVER50: mọi con > 50M =====
-            if mps > MAX_NOTIFY_MPS then
+            else
+            -- ===== NHÁNH > 50M (webhook_over50, không auto join) =====
                 if not sentOver[key] then
                     sentOver[key] = true
-                    AddPetItem(name, mps, jobId, targetFlag, true)
+                    AddPetItem(name, mps, jobId, true)
 
                     local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
                         :format(placeId, jobId)
 
                     local content = table.concat({
-                        "🔔 **Pet >50M Found!**",
+                        "🔔 **Pet >50M Found! (Brainrot)**",
                         "🐾 Name: " .. name,
                         "💸 MPS: " .. formatMpsShort(mps) .. "/s",
                         "🆔 Job ID: `" .. jobId .. "`",
