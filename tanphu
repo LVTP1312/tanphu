@@ -1,18 +1,15 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER – DEBUG SIMPLE
+-- 🧪 TANPHU NOTIFY CORE – NO UI
+--  • Dùng chung logic với TEST PETS FINDER
+--  • webhook_high : target + 2M → 50M
+--  • webhook_over50 : mọi con > 50M
 --==================================================
+
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_Debug_Loaded then
-    warn("[PetsFinder] Script đã chạy, không chạy lại.")
-    return
-end
-_G.TanPhuPetsFinder_Debug_Loaded = true
-
-local Players         = game:GetService("Players")
-local HttpService     = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
-local LocalPlayer     = Players.LocalPlayer
+local Players     = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local LocalPlayer = Players.LocalPlayer
 
 -- HTTP impl
 local http_request_impl =
@@ -22,11 +19,11 @@ local http_request_impl =
     or (typeof(http) == "table" and typeof(http.request) == "function" and http.request)
 
 if not http_request_impl then
-    warn("[PetsFinder] ❌ Không tìm thấy HTTP request.")
+    warn("[CORE] ❌ Không tìm thấy HTTP request.")
     return
 end
 
-local function sendWebhookDirect(url, payload)
+local function sendWebhook(url, payload)
     local ok, err = pcall(function()
         http_request_impl({
             Url = url,
@@ -36,7 +33,7 @@ local function sendWebhookDirect(url, payload)
         })
     end)
     if not ok then
-        warn("[PetsFinder] HTTP error:", err)
+        warn("[CORE] HTTP error:", err)
     end
 end
 
@@ -70,13 +67,14 @@ local function isTarget(name)
 end
 
 --==================================================
--- 💰 PARSE MPS
+-- 💰 PARSE MPS (y chang script TEST)
 --==================================================
 local function parseMps(raw)
     if raw == nil then return 0 end
     if typeof(raw) == "number" then
         return raw
     end
+
     local s = tostring(raw):gsub(",", ""):gsub("%s+", ""):upper()
     local num = tonumber(s:match("([%d%.]+)")) or 0
 
@@ -104,228 +102,21 @@ local function formatMpsShort(v)
     end
 end
 
--- thresholds
-local MAX_NOTIFY_MPS  = 50_000_000  -- 50M
-local GENERIC_MIN_MPS = 2_000_000   -- 2M
+--==================================================
+-- THRESHOLDS + WEBHOOKS
+--==================================================
+local MAX_NOTIFY_MPS  = 50_000_000   -- 50M
+local GENERIC_MIN_MPS = 2_000_000    -- 2M
 
--- webhooks
 local webhook_high    = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50  = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
--- anti spam
+-- chống spam
 local sentHigh  = {}
 local sentOver  = {}
 
 --==================================================
--- UI (giống bản trước, rút gọn comment)
---==================================================
-local autoJoinEnabled = false
-local autoJoinedJobs  = {}
-
-local function createUI()
-    local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "TanPhuPetsFinder"
-    ScreenGui.ResetOnSpawn = false
-    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
-
-    local Frame = Instance.new("Frame")
-    Frame.Size = UDim2.new(0, 450, 0, 380)
-    Frame.Position = UDim2.new(0.5, -225, 0.5, -190)
-    Frame.BackgroundColor3 = Color3.fromRGB(15,15,18)
-    Frame.BorderSizePixel = 0
-    Frame.Active = true
-    Frame.Draggable = true
-    Frame.Parent = ScreenGui
-
-    local FrameCorner = Instance.new("UICorner")
-    FrameCorner.CornerRadius = UDim.new(0, 10)
-    FrameCorner.Parent = Frame
-
-    local FrameStroke = Instance.new("UIStroke")
-    FrameStroke.Thickness = 1.5
-    FrameStroke.Color = Color3.fromRGB(0, 180, 255)
-    FrameStroke.Transparency = 0.4
-    FrameStroke.Parent = Frame
-
-    local TitleBar = Instance.new("Frame")
-    TitleBar.Size = UDim2.new(1, 0, 0, 42)
-    TitleBar.BackgroundColor3 = Color3.fromRGB(20,20,26)
-    TitleBar.BorderSizePixel = 0
-    TitleBar.Parent = Frame
-
-    local TitleCorner = Instance.new("UICorner")
-    TitleCorner.CornerRadius = UDim.new(0, 10)
-    TitleCorner.Parent = TitleBar
-
-    local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, -20, 1, 0)
-    Title.Position = UDim2.new(0, 10, 0, 0)
-    Title.BackgroundTransparency = 1
-    Title.Text = "TanPhu freehub | Pets Finder"
-    Title.TextColor3 = Color3.fromRGB(0, 255, 255)
-    Title.Font = Enum.Font.GothamBold
-    Title.TextSize = 18
-    Title.Parent = TitleBar
-
-    local TitleGradient = Instance.new("UIGradient")
-    TitleGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 255, 200)),
-        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 180, 255)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 0, 255)),
-    })
-    TitleGradient.Parent = Title
-
-    local ControlBar = Instance.new("Frame")
-    ControlBar.Size = UDim2.new(1, -20, 0, 32)
-    ControlBar.Position = UDim2.new(0, 10, 0, 48)
-    ControlBar.BackgroundColor3 = Color3.fromRGB(19,19,24)
-    ControlBar.BorderSizePixel = 0
-    ControlBar.Parent = Frame
-
-    local ControlCorner = Instance.new("UICorner")
-    ControlCorner.CornerRadius = UDim.new(0, 8)
-    ControlCorner.Parent = ControlBar
-
-    local AutoJoinLabel = Instance.new("TextLabel")
-    AutoJoinLabel.Size = UDim2.new(0, 120, 1, 0)
-    AutoJoinLabel.Position = UDim2.new(0, 10, 0, 0)
-    AutoJoinLabel.BackgroundTransparency = 1
-    AutoJoinLabel.Text = "Auto Join:"
-    AutoJoinLabel.Font = Enum.Font.GothamSemibold
-    AutoJoinLabel.TextSize = 14
-    AutoJoinLabel.TextColor3 = Color3.fromRGB(220,220,230)
-    AutoJoinLabel.TextXAlignment = Enum.TextXAlignment.Left
-    AutoJoinLabel.Parent = ControlBar
-
-    local AutoJoinButton = Instance.new("TextButton")
-    AutoJoinButton.Size = UDim2.new(0, 90, 0, 26)
-    AutoJoinButton.Position = UDim2.new(0, 110, 0.5, -13)
-    AutoJoinButton.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-    AutoJoinButton.BorderSizePixel = 0
-    AutoJoinButton.Text = "OFF"
-    AutoJoinButton.Font = Enum.Font.GothamBold
-    AutoJoinButton.TextSize = 14
-    AutoJoinButton.TextColor3 = Color3.fromRGB(255,255,255)
-    AutoJoinButton.Parent = ControlBar
-
-    local AutoJoinCorner = Instance.new("UICorner")
-    AutoJoinCorner.CornerRadius = UDim.new(0, 8)
-    AutoJoinCorner.Parent = AutoJoinButton
-
-    local AutoJoinStroke = Instance.new("UIStroke")
-    AutoJoinStroke.Thickness = 1.4
-    AutoJoinStroke.Color = Color3.fromRGB(200, 60, 60)
-    AutoJoinStroke.Transparency = 0.2
-    AutoJoinStroke.Parent = AutoJoinButton
-
-    local function updateAutoJoinVisual()
-        if autoJoinEnabled then
-            AutoJoinButton.BackgroundColor3 = Color3.fromRGB(0, 170, 90)
-            AutoJoinStroke.Color = Color3.fromRGB(0, 255, 140)
-            AutoJoinButton.Text = "ON"
-        else
-            AutoJoinButton.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-            AutoJoinStroke.Color = Color3.fromRGB(200, 60, 60)
-            AutoJoinButton.Text = "OFF"
-        end
-    end
-    updateAutoJoinVisual()
-
-    AutoJoinButton.MouseButton1Click:Connect(function()
-        autoJoinEnabled = not autoJoinEnabled
-        updateAutoJoinVisual()
-    end)
-
-    local Scrolling = Instance.new("ScrollingFrame")
-    Scrolling.Size = UDim2.new(1, -20, 1, -92)
-    Scrolling.Position = UDim2.new(0, 10, 0, 88)
-    Scrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
-    Scrolling.ScrollBarThickness = 6
-    Scrolling.BackgroundColor3 = Color3.fromRGB(12,12,16)
-    Scrolling.BackgroundTransparency = 0.1
-    Scrolling.BorderSizePixel = 0
-    Scrolling.Parent = Frame
-
-    local ScrollingCorner = Instance.new("UICorner")
-    ScrollingCorner.CornerRadius = UDim.new(0, 8)
-    ScrollingCorner.Parent = Scrolling
-
-    local UIListLayout = Instance.new("UIListLayout")
-    UIListLayout.Padding = UDim.new(0,8)
-    UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    UIListLayout.Parent = Scrolling
-
-    UIListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        Scrolling.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 20)
-    end)
-
-    return ScreenGui, Frame, Scrolling, UIListLayout
-end
-
-local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
-
-local function AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
-    local Item = Instance.new("Frame")
-    Item.Size = UDim2.new(1, -8, 0, 42)
-    Item.BackgroundColor3 = isOver50 and Color3.fromRGB(55, 26, 26)
-        or (isTargetFlag and Color3.fromRGB(32,40,55) or Color3.fromRGB(26,26,32))
-    Item.BorderSizePixel = 0
-    Item.Parent = Scrolling
-
-    local ItemCorner = Instance.new("UICorner")
-    ItemCorner.CornerRadius = UDim.new(0, 8)
-    ItemCorner.Parent = Item
-
-    local ItemStroke = Instance.new("UIStroke")
-    ItemStroke.Thickness = 1
-    ItemStroke.Color = isOver50 and Color3.fromRGB(255, 80, 80)
-        or (isTargetFlag and Color3.fromRGB(0,200,255) or Color3.fromRGB(80,80,90))
-    ItemStroke.Transparency = isOver50 and 0.1 or (isTargetFlag and 0.15 or 0.4)
-    ItemStroke.Parent = Item
-
-    local Name = Instance.new("TextLabel")
-    Name.Size = UDim2.new(0.55, 0, 1, 0)
-    Name.Position = UDim2.new(0, 10, 0, 0)
-    Name.BackgroundTransparency = 1
-    Name.Text = tostring(petName)
-    Name.Font = Enum.Font.GothamMedium
-    Name.TextColor3 = Color3.fromRGB(255,255,255)
-    Name.TextSize = 14
-    Name.TextXAlignment = Enum.TextXAlignment.Left
-    Name.Parent = Item
-
-    local Farm = Instance.new("TextLabel")
-    Farm.Size = UDim2.new(0.2, 0, 1, 0)
-    Farm.Position = UDim2.new(0.55, 0, 0, 0)
-    Farm.BackgroundTransparency = 1
-    Farm.Text = formatMpsShort(mps) .. "/s"
-    Farm.TextColor3 = isOver50 and Color3.fromRGB(255, 200, 200) or Color3.fromRGB(180,180,190)
-    Farm.Font = Enum.Font.Gotham
-    Farm.TextSize = 13
-    Farm.Parent = Item
-
-    local Join = Instance.new("TextButton")
-    Join.Size = UDim2.new(0.2, -10, 0, 30)
-    Join.Position = UDim2.new(0.8, 0, 0.5, -15)
-    Join.BackgroundColor3 = isOver50 and Color3.fromRGB(200,40,40) or Color3.fromRGB(0,140,255)
-    Join.Text = "Join"
-    Join.TextColor3 = Color3.fromRGB(255,255,255)
-    Join.Font = Enum.Font.GothamBold
-    Join.TextSize = 14
-    Join.AutoButtonColor = true
-    Join.Parent = Item
-
-    local JoinCorner = Instance.new("UICorner")
-    JoinCorner.CornerRadius = UDim.new(0, 8)
-    JoinCorner.Parent = Join
-
-    Join.MouseButton1Click:Connect(function()
-        TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
-    end)
-end
-
---==================================================
--- GET MPS TỪ PET (giống script TEST)
+-- LẤY MPS TỪ 1 PET (y chang script TEST)
 --==================================================
 local function getMpsFromPet(pet)
     local mpsObj = pet:FindFirstChild("MPS")
@@ -355,80 +146,75 @@ local function getMpsFromPet(pet)
 end
 
 --==================================================
--- LOOP SCAN + GỬI
+-- MAIN LOOP – GIỐNG TEST nhưng có filter + 2 webhook
 --==================================================
+warn("[CORE] ✅ Notifier core started.")
+
 spawn(function()
-    while task.wait(2) do
-        local jobId = game.JobId or "N/A"
+    while task.wait(3) do
+        local jobId   = tostring(game.JobId or "N/A")
+        local placeId = game.PlaceId
         local petsFolder = workspace:FindFirstChild("Pets")
+
         if not petsFolder then
-            warn("[PetsFinder] Không tìm thấy workspace.Pets")
-        else
-            for _, pet in ipairs(petsFolder:GetChildren()) do
-                local name = pet.Name or "Unknown"
-                local mps  = getMpsFromPet(pet)
-                if mps > 0 then
-                    local key = string.lower(name) .. "_" .. jobId
+            warn("[CORE] Không tìm thấy workspace.Pets")
+            continue
+        end
 
-                    local isTargetFlag = isTarget(name)
+        for _, pet in ipairs(petsFolder:GetChildren()) do
+            local name = pet.Name or "Unknown"
+            local mps  = getMpsFromPet(pet)
 
-                    -- nhánh 2M–50M + target
-                    if (isTargetFlag or mps >= GENERIC_MIN_MPS) and mps <= MAX_NOTIFY_MPS then
-                        if not sentHigh[key] then
-                            sentHigh[key] = true
-                            warn("[PetsFinder] MAIN hit:", name, mps)
-                            AddPetItem(name, mps, jobId, isTargetFlag, false)
+            if mps <= 0 then
+                continue
+            end
 
-                            -- auto join
-                            if autoJoinEnabled and not autoJoinedJobs[jobId] then
-                                autoJoinedJobs[jobId] = true
-                                pcall(function()
-                                    TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
-                                end)
-                            end
+            local key = string.lower(name) .. "_" .. jobId
+            local targetFlag = isTarget(name)
 
-                            local placeId = game.PlaceId
-                            local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
-                                :format(placeId, jobId)
+            -- ===== WEBHOOK HIGH: target + 2M → 50M =====
+            if (targetFlag or mps >= GENERIC_MIN_MPS) and mps <= MAX_NOTIFY_MPS then
+                if not sentHigh[key] then
+                    sentHigh[key] = true
 
-                            local content = table.concat({
-                                "🔔 **Pet Found!**",
-                                "🐾 Name: " .. name,
-                                "💸 MPS: " .. formatMpsShort(mps) .. "/s",
-                                "🆔 Job ID: `" .. jobId .. "`",
-                                "🌐 [JOIN HERE](" .. joinLink .. ")"
-                            }, "\n")
+                    warn("[CORE] MAIN hit:", name, mps)
 
-                            sendWebhookDirect(webhook_high, { content = content })
-                        end
-                    end
+                    local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
+                        :format(placeId, jobId)
 
-                    -- nhánh >50M
-                    if mps > MAX_NOTIFY_MPS then
-                        if not sentOver[key] then
-                            sentOver[key] = true
-                            warn("[PetsFinder] OVER50 hit:", name, mps)
-                            AddPetItem(name, mps, jobId, isTargetFlag, true)
+                    local content = table.concat({
+                        "🔔 **Pet Found! (≤50M)**",
+                        "🐾 Name: " .. name,
+                        "💸 MPS: " .. formatMpsShort(mps) .. "/s",
+                        "🆔 Job ID: `" .. jobId .. "`",
+                        "🌐 [JOIN HERE](" .. joinLink .. ")"
+                    }, "\n")
 
-                            local placeId = game.PlaceId
-                            local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
-                                :format(placeId, jobId)
+                    sendWebhook(webhook_high, { content = content })
+                end
+            end
 
-                            local content = table.concat({
-                                "🔔 **Pet >50M Found!**",
-                                "🐾 Name: " .. name,
-                                "💸 MPS: " .. formatMpsShort(mps) .. "/s",
-                                "🆔 Job ID: `" .. jobId .. "`",
-                                "🌐 [JOIN HERE](" .. joinLink .. ")"
-                            }, "\n")
+            -- ===== WEBHOOK OVER50: mọi con > 50M =====
+            if mps > MAX_NOTIFY_MPS then
+                if not sentOver[key] then
+                    sentOver[key] = true
 
-                            sendWebhookDirect(webhook_over50, { content = content })
-                        end
-                    end
+                    warn("[CORE] OVER50 hit:", name, mps)
+
+                    local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
+                        :format(placeId, jobId)
+
+                    local content = table.concat({
+                        "🔔 **Pet >50M Found!**",
+                        "🐾 Name: " .. name,
+                        "💸 MPS: " .. formatMpsShort(mps) .. "/s",
+                        "🆔 Job ID: `" .. jobId .. "`",
+                        "🌐 [JOIN HERE](" .. joinLink .. ")"
+                    }, "\n")
+
+                    sendWebhook(webhook_over50, { content = content })
                 end
             end
         end
     end
 end)
-
-warn("[PetsFinder] ✅ Script debug đã khởi động.")
