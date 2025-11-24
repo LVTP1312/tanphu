@@ -1,13 +1,13 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER v6 – FIX PATH
+-- ⏳ TANPHU PETS FINDER v7 – FILTER SMALL / TRASH
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v6_Loaded then
+if _G.TanPhuPetsFinder_v7_Loaded then
     warn("[PetsFinder] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v6_Loaded = true
+_G.TanPhuPetsFinder_v7_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -112,7 +112,6 @@ local GENERIC_MIN_MPS = 2_000_000    -- 2M
 local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
--- anti spam cho từng nhánh
 local sentHigh = {}
 local sentOver = {}
 
@@ -325,14 +324,17 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
 end
 
 --==================================================
--- GET MPS TỪ PET (giống script TEST)
+-- LẤY MPS + RAW TEXT TỪ PET (y chang TEST nhưng trả thêm text)
 --==================================================
 local function getMpsFromPet(pet)
+    -- 1) Value object
     local mpsObj = pet:FindFirstChild("MPS")
     if mpsObj and mpsObj.Value ~= nil then
-        return parseMps(mpsObj.Value)
+        local raw = tostring(mpsObj.Value)
+        return parseMps(raw), raw
     end
 
+    -- 2) Text trong BillboardGui / SurfaceGui
     local bestText = nil
     for _, d in ipairs(pet:GetDescendants()) do
         if d:IsA("TextLabel") or d:IsA("TextButton") then
@@ -348,23 +350,22 @@ local function getMpsFromPet(pet)
     end
 
     if bestText then
-        return parseMps(bestText)
+        return parseMps(bestText), bestText
     end
 
-    return 0
+    return 0, nil
 end
 
 --==================================================
--- MAIN LOOP – QUÉT CANDIDATES GIỐNG SCRIPT TEST
+-- MAIN LOOP – SCAN GIỐNG TEST, THÊM FILTER
 --==================================================
-warn("[PetsFinder] ✅ v6 started.")
+warn("[PetsFinder] ✅ v7 started.")
 
 spawn(function()
     while task.wait(3) do
         local jobId   = tostring(game.JobId or "N/A")
         local placeId = game.PlaceId
 
-        -- lấy danh sách model/folder cần check
         local candidates = {}
         local petsFolder = workspace:FindFirstChild("Pets")
 
@@ -379,23 +380,39 @@ spawn(function()
         end
 
         for _, pet in ipairs(candidates) do
-            local name = pet.Name or "Unknown"
-            local mps  = getMpsFromPet(pet)
+            local name       = pet.Name or "Unknown"
+            local mps, raw   = getMpsFromPet(pet)
 
             if mps <= 0 then
                 continue
             end
 
-            local key = string.lower(name) .. "_" .. jobId
+            local key        = string.lower(name) .. "_" .. jobId
             local targetFlag = isTarget(name)
 
-            -- ===== WEBHOOK HIGH: target + 2M → 50M =====
-            if (targetFlag or mps >= GENERIC_MIN_MPS) and mps <= MAX_NOTIFY_MPS then
+            local hasSuffix = false
+            if raw then
+                local up = raw:upper()
+                if up:find("M") or up:find("B") or up:find("K") then
+                    hasSuffix = true
+                end
+            end
+
+            -- RULE:
+            --  • target -> luôn lọc bằng mps > 0
+            --  • non-target -> chỉ chấp nhận khi (mps >= 2M) HOẶC (raw có M/B/K)
+            local isBigEnough = targetFlag or hasSuffix or (mps >= GENERIC_MIN_MPS)
+            if not isBigEnough then
+                -- mấy con 7/s, 75/s sẽ rơi vào đây -> bỏ qua
+                continue
+            end
+
+            -- ===== WEBHOOK HIGH: target + big (2M→50M) =====
+            if mps <= MAX_NOTIFY_MPS then
                 if not sentHigh[key] then
                     sentHigh[key] = true
                     AddPetItem(name, mps, jobId, targetFlag, false)
 
-                    -- auto join
                     if autoJoinEnabled and not autoJoinedJobs[jobId] then
                         autoJoinedJobs[jobId] = true
                         pcall(function()
