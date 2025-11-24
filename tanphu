@@ -1,17 +1,19 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER v9 – ONLY BRAINROT IN TARGETS
---   • Tìm tên pet trong TextLabel/TextButton (Los Combinasionas, ...)
---   • Chỉ báo nếu tên nằm trong targets + MPS ≥ 2M
+-- ⏳ TANPHU PETS FINDER v9.2 – PER-PET NOTIFY
+--   • Chỉ brainrot trong targets
+--   • Mỗi con pet (Instance) riêng biệt
+--   • MPS >= 2M mới tính
 --   • 2M–50M  → webhook_high (+ Auto Join)
 --   • >50M    → webhook_over50 (không Auto Join)
+--   • Nếu MPS của đúng con đó tăng → notify lại
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v9_Loaded then
+if _G.TanPhuPetsFinder_v9_2_Loaded then
     warn("[PetsFinder] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v9_Loaded = true
+_G.TanPhuPetsFinder_v9_2_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -63,26 +65,22 @@ local targets = {
     'Captiano Moby','La Taco Combinasion','Los Puggies','Los Spaghettis','Fragrama and Chocrama','Orcaledon','Swag Soda'
 }
 
--- list lowercase để tìm nhanh
 local targetsLower = {}
 for _, t in ipairs(targets) do
     table.insert(targetsLower, string.lower(t))
 end
 
--- Trả về: displayName (chuẩn từ targets) hoặc nil nếu model ko chứa brainrot nào
+-- Tìm tên brainrot từ model (Name + mọi TextLabel/TextButton)
 local function detectTargetFromModel(model)
     if not model then return nil end
 
-    -- check chính cái Name trước
     local nameLower = string.lower(model.Name or "")
     for i, tLower in ipairs(targetsLower) do
-        local idx = string.find(nameLower, tLower, 1, true)
-        if idx then
+        if string.find(nameLower, tLower, 1, true) then
             return targets[i]
         end
     end
 
-    -- check text của mọi TextLabel/TextButton trong descendants
     for _, d in ipairs(model:GetDescendants()) do
         if d:IsA("TextLabel") or d:IsA("TextButton") then
             local txt = d.Text
@@ -139,14 +137,14 @@ end
 --==================================================
 -- NGƯỠNG & WEBHOOK
 --==================================================
-local MIN_TARGET_MPS = 2_000_000   -- brainrot dưới 2M bỏ qua
-local SPLIT_MPS      = 50_000_000  -- chia webhook ở 50M
+local MIN_TARGET_MPS = 2_000_000
+local SPLIT_MPS      = 50_000_000
 
 local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
-local sentHigh = {}
-local sentOver = {}
+-- ✅ Mỗi pet (Instance) 1 best MPS riêng
+local bestMpsPerPet = {}  -- key = pet Instance, value = best MPS đã báo
 
 --==================================================
 -- UI + AUTO JOIN
@@ -355,7 +353,7 @@ local function AddPetItem(petName, mps, jobId, isOver50)
 end
 
 --==================================================
--- LẤY MPS TỪ MODEL (giống TEST)
+-- GET MPS TỪ MODEL
 --==================================================
 local function getMpsFromModel(pet)
     local mpsObj = pet:FindFirstChild("MPS")
@@ -388,7 +386,7 @@ end
 --==================================================
 -- MAIN LOOP
 --==================================================
-warn("[PetsFinder] ✅ v9 started.")
+warn("[PetsFinder] ✅ v9.2 started.")
 
 spawn(function()
     while task.wait(3) do
@@ -409,71 +407,50 @@ spawn(function()
         end
 
         for _, pet in ipairs(candidates) do
-            -- tìm tên brainrot trong model
             local displayName = detectTargetFromModel(pet)
             if not displayName then
-                -- model này không có text nào trùng với list brainrot → bỏ qua
                 continue
             end
 
             local mps = select(1, getMpsFromModel(pet))
             if mps < MIN_TARGET_MPS then
-                -- brainrot nhưng MPS nhỏ < 2M → bỏ
                 continue
             end
 
-            local key = string.lower(displayName) .. "_" .. jobId
-
-            -- log debug 1 lần cho mỗi pet (để bạn xem F9)
-            if not sentHigh[key] and not sentOver[key] then
-                warn(string.format("[PetsFinder] Found target %s | MPS=%.0f", displayName, mps))
+            -- key theo chính pet Instance
+            local prevBest = bestMpsPerPet[pet] or 0
+            if mps <= prevBest then
+                continue -- MPS không tăng → khỏi spam
             end
+            bestMpsPerPet[pet] = mps
 
-            if mps <= SPLIT_MPS then
-                -- ===== NHÁNH ≤ 50M =====
-                if not sentHigh[key] then
-                    sentHigh[key] = true
-                    AddPetItem(displayName, mps, jobId, false)
+            warn(string.format("[PetsFinder] Found %s | MPS=%d (prev=%d)", displayName, mps, prevBest))
 
-                    if autoJoinEnabled and not autoJoinedJobs[jobId] then
-                        autoJoinedJobs[jobId] = true
-                        pcall(function()
-                            TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
-                        end)
-                    end
+            local over50   = (mps > SPLIT_MPS)
+            local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
+                :format(placeId, jobId)
 
-                    local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
-                        :format(placeId, jobId)
+            AddPetItem(displayName, mps, jobId, over50)
 
-                    local content = table.concat({
-                        "🔔 **Pet Found! (Brainrot, ≤50M)**",
-                        "🐾 Name: " .. displayName,
-                        "💸 MPS: " .. formatMpsShort(mps) .. "/s",
-                        "🆔 Job ID: `" .. jobId .. "`",
-                        "🌐 [JOIN HERE](" .. joinLink .. ")"
-                    }, "\n")
+            local content = table.concat({
+                over50 and "🔔 **Pet >50M Found! (Brainrot)**" or "🔔 **Pet Found! (Brainrot, ≤50M)**",
+                "🐾 Name: " .. displayName,
+                "💸 MPS: " .. formatMpsShort(mps) .. "/s",
+                "🆔 Job ID: `" .. jobId .. "`",
+                "🌐 [JOIN HERE](" .. joinLink .. ")"
+            }, "\n")
 
-                    sendWebhook(webhook_high, { content = content })
-                end
+            if over50 then
+                sendWebhook(webhook_over50, { content = content })
             else
-                -- ===== NHÁNH > 50M =====
-                if not sentOver[key] then
-                    sentOver[key] = true
-                    AddPetItem(displayName, mps, jobId, true)
-
-                    local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
-                        :format(placeId, jobId)
-
-                    local content = table.concat({
-                        "🔔 **Pet >50M Found! (Brainrot)**",
-                        "🐾 Name: " .. displayName,
-                        "💸 MPS: " .. formatMpsShort(mps) .. "/s",
-                        "🆔 Job ID: `" .. jobId .. "`",
-                        "🌐 [JOIN HERE](" .. joinLink .. ")"
-                    }, "\n")
-
-                    sendWebhook(webhook_over50, { content = content })
+                -- Auto join khi có brainrot ≤50M mới
+                if autoJoinEnabled and not autoJoinedJobs[jobId] then
+                    autoJoinedJobs[jobId] = true
+                    pcall(function()
+                        TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
+                    end)
                 end
+                sendWebhook(webhook_high, { content = content })
             end
         end
     end
