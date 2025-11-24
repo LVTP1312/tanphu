@@ -1,333 +1,295 @@
-import asyncio
-import json
-import uuid
-import httpx
-import os
-import time
-from aiohttp import web
-from collections import deque, defaultdict
-from datetime import datetime
+--==================================================
+-- ⏳ ĐỢI GAME LOAD
+--==================================================
+repeat task.wait() until game:IsLoaded()
 
-# =================== CONFIG ===================
-PLACE_ID = 109983668079237
-HOST = "0.0.0.0"
-PORT = 8080
+--==================================================
+-- 🔧 SERVICES
+--==================================================
+local Players      = game:GetService("Players")
+local HttpService  = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local StarterGui   = game:GetService("StarterGui")
+local LocalPlayer  = Players.LocalPlayer
 
-SCAN_INTERVAL = 60
-MAX_SERVERS = 200
-REFILL_BATCH = 200
+--==================================================
+-- ⚙️ HTTP REQUEST (tự chọn impl)
+--==================================================
+local http_request_impl = nil
+if typeof(syn) == "table" and typeof(syn.request) == "function" then
+    http_request_impl = syn.request
+elseif typeof(http_request) == "function" then
+    http_request_impl = http_request
+elseif typeof(request) == "function" then
+    http_request_impl = request
+elseif typeof(http) == "table" and typeof(http.request) == "function" then
+    http_request_impl = http.request
+end
 
-ROBLOX_API = "https://games.roblox.com/v1/games/{}/servers/Public?sortOrder=Asc&limit=100"
+local function doRequest(opts)
+    if http_request_impl then
+        local ok, err = pcall(function()
+            http_request_impl(opts)
+        end)
+        if not ok then
+            warn("HTTP error:", err)
+        end
+    elseif syn and syn.request then
+        local ok, err = pcall(function()
+            syn.request(opts)
+        end)
+        if not ok then
+            warn("Syn request error:", err)
+        end
+    else
+        warn("❌ Không tìm thấy HTTP request (syn/http_request/request/http.request)")
+    end
+end
 
-# 🔐 PROXY CONFIG (chỉ dùng cho scan API, không bắt Roblox client đi qua)
-PROXY_HOST = "103.166.184.192"
-PROXY_PORT = "26235"
-PROXY_USER = "user26235"
-PROXY_PASS = "1758360642"
-PROXY_URL = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+--==================================================
+-- ⚙️ LOCAL TARGETS (pet) cho hệ webhook mới
+--==================================================
+local targets = {
+    'Chipso and Queso','La Casa Boo','Tang Tang Keletang','Headless Horseman',
+    'Strawberry Elephant','Chicleteira Bicicleteira','Los Chicleteiras',
+    'La Grande Combinasion','Nuclearo Dinossauro','Esok Sekolah','Ketupat Kepat',
+    'Money Money Puggy','Tictac Sahur','Ketchuru and Musturu','Garama and Madundung',
+    'Spaghetti Tualetti','Dragon Cannelloni','67','Mariachi Corazoni','Tacorita Bicicleta',
+    'La Extinct Grande','Las Sis',
+    'Celularcini Viciosini','Los Bros','Tralaledon','Los Tacoritas','Los Primos',
+    'Chillin Chili','Los Combinasionas','Los Hotspotsitos','La Supreme Combinasion',
+    'Los 67','La Secret Combinasion','Burguro And Fryuro','La Spooky Grande','Los Mobilis',
+    'Eviledon','Spooky and Pumpky','Mieteteira Bicicleteira','Los Spooky Combinasionas','Meowl',
+    'Los Matteos','Bisonte Guppitere','La Vacca Saturno Saturnita','Los Spiderinis','Los Tralaleritos',
+    'Yess My Examine','Las Tralaleritas','Job Job Job Sahur','Las Vaquitas Saturnitas','1x1x1x1','Guest 666',
+    'Captiano Moby','La Taco Combinasion','Los Puggies','Los Spaghettis','Fragrama and Chocrama','Orcaledon','Swag Soda'
+}
 
-# ====== LEASE/RESERVE POLICY ======
-LEASE_TTL = 60            # giây: hết hạn giữ chỗ nếu client treo
-DISPATCH_RATIO = 2        # 2 job fresh : 1 job reserve
-RESCAN_COOLDOWN = 3       # giây: cho phép quét bù nếu /next gọi lúc hết hàng
-# ==================================
+--==================================================
+-- ⚙️ GIỚI HẠN CHỈ THÔNG BÁO ≤ 50M
+--==================================================
+local MAX_NOTIFY_MPS = 50_000_000   -- 50M
+local MIN_NOTIFY_MPS = 5_000_000    -- 5M (ngưỡng generic MPS)
 
-# =================== STATE ===================
-job_queue = deque()                      # fresh jobs (ưu tiên)
-recent_jobs = deque(maxlen=5000)         # reserve kho dự phòng
-assigned_jobs = set()                    # đang được giữ bởi client
-leases = {}                              # jid -> expire_ts
+--==================================================
+-- ⚙️ HÀM MATCH TÊN TARGET (case-insensitive)
+--==================================================
+local function isTarget(name)
+    local n = string.lower(name or "")
+    for _, t in ipairs(targets) do
+        if n:find(string.lower(t), 1, true) then
+            return true
+        end
+    end
+    return false
+end
 
-client_stats = defaultdict(int)
-queue_lock = asyncio.Lock()
+--==================================================
+-- ⚙️ WEBHOOK LINKS
+--==================================================
+local webhook_high    = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
+local webhook_index   = webhook_high
+local webhook_special = webhook_high
 
-last_scan_time = 0
-next_scan_time = 0
-scan_counter = 0
-dispatch_counter = 0
+--==================================================
+-- ⚙️ CHỐNG SPAM (petName + jobId)
+--==================================================
+local sent = {}
 
-skip_count = 0
-# last_public_ids = set()   # KHÔNG còn dùng để xoá PRIVATE nữa
+local function shouldSendOnce(petName, jobId)
+    petName = tostring(petName or "Unknown")
+    jobId = tostring(jobId or "0")
+    local key = string.lower(petName) .. "_" .. jobId
+    if sent[key] then
+        return false
+    end
+    sent[key] = true
+    return true
+end
 
+--==================================================
+-- ⚙️ QUY TẮC NÊN THÔNG BÁO
+--   - Chặn tất cả pet có MPS > 50M
+--   - Nếu tên nằm trong TARGETS → báo (miễn là ≤ 50M)
+--   - Hoặc MPS từ 5M → 50M (pet thường)
+--==================================================
+local function shouldNotify(petName, mps)
+    mps = tonumber(mps) or 0
 
-# =================== CLEAR ===================
-def clear_console():
-    os.system("cls" if os.name == "nt" else "clear")
+    -- Chặn mọi pet > 50M
+    if mps > MAX_NOTIFY_MPS then
+        return false
+    end
 
+    -- Pet trong danh sách targets (dù MPS < 5M vẫn báo, miễn không vượt 50M)
+    if isTarget(petName) then
+        return true
+    end
 
-# =================== FETCH SERVERS (multi-page) ===================
-# ƯU TIÊN server 2–8 player, nhưng nếu KHÔNG CÓ thì fallback sang server khác (>=1 player, không full)
-async def fetch_servers(max_count=MAX_SERVERS):
-    preferred = []  # 2–8 player
-    others = []     # còn lại (>=1, không full)
-    cursor = None
-    fetched = 0
-    headers = {"User-Agent": "CTHub-Scanner/1.0"}
+    -- Pet thường nhưng MPS trong khoảng 5M → 50M
+    if mps >= MIN_NOTIFY_MPS then
+        return true
+    end
 
-    async with httpx.AsyncClient(
-        timeout=10.0,
-        verify=False,
-        proxy=PROXY_URL,
-        headers=headers
-    ) as client:
-        while len(preferred) < max_count and len(others) < max_count:
-            url = ROBLOX_API.format(PLACE_ID)
-            if cursor:
-                url += f"&cursor={cursor}"
+    return false
+end
 
-            try:
-                res = await client.get(url)
-                data = res.json()
-            except Exception as e:
-                print(f"⚠️ fetch_servers lỗi: {e}")
-                break
+--==================================================
+-- 🎨 UI: TanPhu freehub | Pets Finder
+--==================================================
+local function createUI()
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "TanPhuPetsFinder"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
-            for s in data.get("data", []):
-                fetched += 1
-                if fetched <= skip_count:
-                    continue
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(0, 420, 0, 360)
+    Frame.Position = UDim2.new(0.5, -210, 0.5, -180)
+    Frame.BackgroundColor3 = Color3.fromRGB(18,18,20)
+    Frame.BorderSizePixel = 0
+    Frame.Active = true
+    Frame.Draggable = true
+    Frame.Parent = ScreenGui
 
-                jid = str(s.get("id", ""))
-                if not jid:
-                    continue
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, 0, 0, 40)
+    Title.BackgroundColor3 = Color3.fromRGB(28,28,35)
+    Title.BorderSizePixel = 0
+    Title.Text = "TanPhu freehub | Pets Finder"
+    Title.TextColor3 = Color3.fromRGB(0,255,255)
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 18
+    Title.Parent = Frame
 
-                playing = int(s.get("playing", 0) or 0)
-                max_players = int(s.get("maxPlayers", 0) or 0)
+    local Scrolling = Instance.new("ScrollingFrame")
+    Scrolling.Size = UDim2.new(1, 0, 1, -40)
+    Scrolling.Position = UDim2.new(0, 0, 0, 40)
+    Scrolling.CanvasSize = UDim2.new(0, 0, 0, 0)
+    Scrolling.ScrollBarThickness = 6
+    Scrolling.BackgroundTransparency = 1
+    Scrolling.BorderSizePixel = 0
+    Scrolling.Parent = Frame
 
-                # bỏ server 0 player
-                if playing <= 0:
-                    continue
+    local UIListLayout = Instance.new("UIListLayout")
+    UIListLayout.Padding = UDim.new(0,8)
+    UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    UIListLayout.Parent = Scrolling
 
-                # bỏ server full
-                if max_players and playing >= max_players:
-                    continue
+    -- Auto update CanvasSize khi list thay đổi
+    UIListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        Scrolling.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 20)
+    end)
 
-                entry = {"id": jid, "playing": playing}
+    return ScreenGui, Frame, Scrolling, UIListLayout
+end
 
-                if 2 <= playing <= 8:
-                    preferred.append(entry)
-                else:
-                    others.append(entry)
+local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
 
-                # dừng khi đủ max_count ở 1 trong 2 list
-                if len(preferred) >= max_count or len(others) >= max_count:
-                    break
+--==================================================
+-- 🔹 Function tạo 1 item trong UI
+--==================================================
+local function AddPetItem(petName, mps, jobId)
+    local Item = Instance.new("Frame")
+    Item.Size = UDim2.new(1, -10, 0, 40)
+    Item.BackgroundColor3 = Color3.fromRGB(32,32,38)
+    Item.BorderSizePixel = 0
+    Item.Parent = Scrolling
 
-            cursor = data.get("nextPageCursor")
-            if not cursor:
-                break
+    local Name = Instance.new("TextLabel")
+    Name.Size = UDim2.new(0.6, 0, 1, 0)
+    Name.BackgroundTransparency = 1
+    Name.Text = petName
+    Name.Font = Enum.Font.GothamMedium
+    Name.TextColor3 = Color3.fromRGB(255,255,255)
+    Name.TextSize = 14
+    Name.TextXAlignment = Enum.TextXAlignment.Left
+    Name.Position = UDim2.new(0, 10, 0, 0)
+    Name.Parent = Item
 
-    # chọn list nào để dùng
-    if preferred:
-        servers = preferred
-        print(
-            f"✅ fetch_servers: ƯU TIÊN {len(servers)} server 2–8 player "
-            f"(min={min(s['playing'] for s in servers)}, max={max(s['playing'] for s in servers)})"
-        )
-    else:
-        servers = others
-        if servers:
-            print(
-                f"⚠️ fetch_servers: KHÔNG có server 2–8 player, dùng {len(servers)} server khác "
-                f"(min={min(s['playing'] for s in servers)}, max={max(s['playing'] for s in servers)})"
-            )
-        else:
-            print("⚠️ fetch_servers: KHÔNG có server phù hợp nào (>=1 player, không full).")
+    local Farm = Instance.new("TextLabel")
+    Farm.Size = UDim2.new(0.2, 0, 1, 0)
+    Farm.Position = UDim2.new(0.6, 0, 0, 0)
+    Farm.BackgroundTransparency = 1
+    Farm.Text = tostring(mps) .. "/s"
+    Farm.TextColor3 = Color3.fromRGB(180,180,180)
+    Farm.Font = Enum.Font.Gotham
+    Farm.TextSize = 14
+    Farm.Parent = Item
 
-    # sort ít người → nhiều người
-    servers.sort(key=lambda s: s["playing"])
-    return servers
+    local Join = Instance.new("TextButton")
+    Join.Size = UDim2.new(0.2, -10, 0, 28)
+    Join.Position = UDim2.new(0.8, 0, 0.5, -14)
+    Join.BackgroundColor3 = Color3.fromRGB(0,140,255)
+    Join.Text = "Join"
+    Join.TextColor3 = Color3.fromRGB(255,255,255)
+    Join.Font = Enum.Font.GothamBold
+    Join.TextSize = 14
+    Join.AutoButtonColor = true
+    Join.Parent = Item
 
+    Join.MouseButton1Click:Connect(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
+    end)
+end
 
-# =================== SWEEPER (requeue lease hết hạn) ===================
-async def sweep_expired_leases():
-    now = time.time()
-    expired = [jid for jid, exp in list(leases.items()) if exp <= now]
-    if not expired:
+--==================================================
+-- 📤 GỬI WEBHOOK 1 PET (PROCESS)
+--==================================================
+local function processPet(petName, mps, jobId)
+    if not shouldSendOnce(petName, jobId) then
         return
+    end
 
-    async with queue_lock:
-        requeued = 0
-        for jid in expired:
-            leases.pop(jid, None)
-            assigned_jobs.discard(jid)
-            if jid not in job_queue and jid not in recent_jobs:
-                job_queue.appendleft(jid)
-                requeued += 1
+    -- Thêm vào UI
+    AddPetItem(petName, mps, jobId)
 
-    if requeued:
-        print(f"♻️ Requeue {requeued} job hết hạn lease → fresh={len(job_queue)}")
+    -- Gửi webhook đơn giản
+    local data = {
+        content =
+            "🔔 **Pet Found!**\n" ..
+            "🐾 Name: " .. tostring(petName) .. "\n" ..
+            "💸 MPS: " .. tostring(mps) .. "\n" ..
+            "🆔 Job ID: `" .. tostring(jobId) .. "`",
+    }
 
-
-# =================== UPDATE QUEUE — SCAN ===================
-async def update_queue():
-    global last_scan_time, next_scan_time, scan_counter
-
-    scan_counter += 1
-    new_servers = await fetch_servers(MAX_SERVERS)
-
-    count_new = 0
-    async with queue_lock:
-        # Đưa job mới lên đầu, bỏ trùng
-        for s in reversed(new_servers):  # new_servers đã sort ít→nhiều
-            jid = s["id"]
-            if jid in assigned_jobs or jid in recent_jobs or jid in job_queue:
-                continue
-            job_queue.appendleft(jid)
-            count_new += 1
-
-        last_scan_time = time.time()
-        next_scan_time = last_scan_time + SCAN_INTERVAL
-
-    now = datetime.now().strftime("%H:%M:%S")
-    print((
-        "🔄 Scan #{0} | Thêm {1} server mới lúc {2}"
-        if count_new > 0 else
-        "⚠️ Scan #{0} | Không có server mới lúc {2}"
-    ).format(scan_counter, count_new, now))
-    print(f"📦 Fresh: {len(job_queue)} | Reserve: {len(recent_jobs)}\n")
-
-
-# =================== TIMER ===================
-async def timer_loop():
-    while True:
-        remaining = max(0, int(next_scan_time - time.time()))
-        print(f"🕒 Còn {remaining}s trước khi quét...", end="\r")
-        await sweep_expired_leases()
-        await asyncio.sleep(1)
-
-
-# =================== SCANNER LOOP ===================
-async def scanner_loop():
-    while True:
-        await update_queue()
-        await asyncio.sleep(SCAN_INTERVAL)
-
-
-# =================== HANDLE NEXT ===================
-async def handle_next(request):
-    client = request.remote or "unknown"
-    client_stats[client] += 1
-
-    async with queue_lock:
-        global dispatch_counter
-        dispatch_counter += 1
-        pick_from_reserve = (dispatch_counter % (DISPATCH_RATIO + 1) == 0)
-
-        jid = None
-        source = None
-
-        if pick_from_reserve and recent_jobs:
-            jid = recent_jobs.popleft()
-            source = "FALLBACK"
-        elif job_queue:
-            jid = job_queue.popleft()
-            recent_jobs.append(jid)
-            source = "fresh"
-        elif recent_jobs:
-            jid = recent_jobs.popleft()
-            source = "FALLBACK"
-
-        if jid:
-            assigned_jobs.add(jid)
-            leases[jid] = time.time() + LEASE_TTL
-            print(f"{client} → {jid} | {source} | fresh={len(job_queue)} reserve={len(recent_jobs)}")
-            try:
-                return web.json_response({"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())})
-            except (ConnectionResetError, asyncio.CancelledError, BrokenPipeError):
-                leases.pop(jid, None)
-                assigned_jobs.discard(jid)
-                if source == "fresh":
-                    job_queue.appendleft(jid)
-                else:
-                    recent_jobs.appendleft(jid)
-                print(f"⚠️ {client} disconnect → requeue {jid}")
-                raise
-
-    await sweep_expired_leases()
-    if time.time() - last_scan_time >= RESCAN_COOLDOWN:
-        try:
-            await update_queue()
-        except Exception as e:
-            print(f"⚠️ quick-rescan error: {e}")
-
-    async with queue_lock:
-        jid = None
-        source = None
-
-        if job_queue:
-            jid = job_queue.popleft()
-            recent_jobs.append(jid)
-            source = "fresh"
-        elif recent_jobs:
-            jid = recent_jobs.popleft()
-            source = "FALLBACK"
-        else:
-            return web.json_response({
-                "jobId": None,
-                "message": "Hết job, đợi lần quét 60s tiếp theo."
-            })
-
-        assigned_jobs.add(jid)
-        leases[jid] = time.time() + LEASE_TTL
-        print(f"{client} → {jid} | {source} (after refill) | fresh={len(job_queue)} reserve={len(recent_jobs)}")
-        return web.json_response({"jobId": jid, "placeId": PLACE_ID, "nonce": str(uuid.uuid4())})
-
-
-# =================== ACK ===================
-async def handle_ack(request):
-    jid = request.query.get("jobId")
-    if not jid:
-        return web.json_response({"ok": False, "error": "missing jobId"}, status=400)
-
-    async with queue_lock:
-        leases.pop(jid, None)
-        assigned_jobs.discard(jid)
-    return web.json_response({"ok": True})
-
-
-# =================== STATUS ===================
-async def handle_status(request):
-    remaining = max(0, int(next_scan_time - time.time()))
-    return web.json_response({
-        "placeId": PLACE_ID,
-        "fresh_queue": len(job_queue),
-        "fallback_store": len(recent_jobs),
-        "assigned": len(assigned_jobs),
-        "leases": len(leases),
-        "scan_count": scan_counter,
-        "next_refresh_in_sec": remaining,
-        "proxy": f"{PROXY_HOST}:{PROXY_PORT}"
+    doRequest({
+        Url = webhook_high,
+        Method = "POST",
+        Headers = { ["Content-Type"] = "application/json" },
+        Body = HttpService:JSONEncode(data)
     })
+end
 
+--==================================================
+-- 🔁 SCAN PET + JOB ID TỰ ĐỘNG (2s/lần)
+--==================================================
+spawn(function()
+    while task.wait(2) do
+        local jobId = game.JobId
+        local petsFolder = workspace:FindFirstChild("Pets")
 
-# =================== MAIN ===================
-async def main():
-    global skip_count
-    clear_console()
-    try:
-        skip_count = int(input("Bỏ bao nhiêu server đầu tiên (0 nếu không): ") or 0)
-    except Exception:
-        skip_count = 0
+        if not petsFolder then
+            -- nếu game khác structure, khỏi crash
+            continue
+        end
 
-    print("🚀 Khởi động server...")
+        for _, pet in ipairs(petsFolder:GetChildren()) do
+            local petName = pet.Name or "Unknown"
+            local mpsValue = 0
+            local mpsObj = pet:FindFirstChild("MPS")
 
-    asyncio.create_task(scanner_loop())
-    asyncio.create_task(timer_loop())
+            if mpsObj and mpsObj.Value then
+                mpsValue = tonumber(mpsObj.Value) or 0
+            end
 
-    app = web.Application()
-    app.router.add_get("/next", handle_next)
-    app.router.add_get("/status", handle_status)
-    app.router.add_get("/ack", handle_ack)
+            if shouldNotify(petName, mpsValue) then
+                processPet(petName, mpsValue, jobId)
+            end
+        end
+    end
+end)
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, HOST, PORT)
-    await site.start()
-
-    print("✔️ Server đang chạy...")
-    await asyncio.Event().wait()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+--==================================================
+-- ✅ Script chạy ẩn, chỉ hiện GUI + gửi webhook khi tìm được pet hợp lệ
+--==================================================
