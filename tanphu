@@ -1,13 +1,13 @@
 --==================================================
--- ⏳ ĐỢI GAME LOAD + CHỐNG CHẠY TRÙNG (v4)
+-- ⏳ ĐỢI GAME LOAD + CHỐNG CHẠY TRÙNG (v5)
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v4_Loaded then
-    warn("TanPhuPetsFinder v4 đã chạy, không chạy lại.")
+if _G.TanPhuPetsFinder_v5_Loaded then
+    warn("TanPhuPetsFinder v5 đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v4_Loaded = true
+_G.TanPhuPetsFinder_v5_Loaded = true
 
 --==================================================
 -- 🔧 SERVICES
@@ -98,19 +98,52 @@ local function isTarget(name)
 end
 
 --==================================================
--- 💰 NGƯỠNG MPS
+-- 💰 HÀM CHUYỂN MPS (K / M / B / text) → SỐ
+--   Ví dụ: "135M/s", "$800K/s", "2.3B", 3000000
 --==================================================
-local MAX_NOTIFY_MPS  = 50000000   -- 50M (cho webhook_high)
-local GENERIC_MIN_MPS = 2000000    -- 2M
+local function parseMps(raw)
+    if raw == nil then return 0 end
+    if typeof(raw) == "number" then
+        return raw
+    end
+    local s = tostring(raw):gsub(",", ""):gsub("%s+", ""):upper() -- "$135M/S" -> "$135M/S"
+    local num = tonumber(s:match("([%d%.]+)")) or 0               -- 135
+
+    if s:find("B") then          -- Billion
+        return num * 1e9
+    elseif s:find("M") then      -- Million
+        return num * 1e6
+    elseif s:find("K") then      -- Thousand
+        return num * 1e3
+    else
+        return num
+    end
+end
+
+-- hiển thị lại MPS dạng ngắn
+local function formatMpsShort(v)
+    v = tonumber(v) or 0
+    if v >= 1e9 then
+        return string.format("%.2fB", v/1e9)
+    elseif v >= 1e6 then
+        return string.format("%.2fM", v/1e6)
+    elseif v >= 1e3 then
+        return string.format("%.2fK", v/1e3)
+    else
+        return tostring(math.floor(v))
+    end
+end
+
+--==================================================
+-- 💰 NGƯỠNG MPS (đơn vị tiền thật)
+--==================================================
+local MAX_NOTIFY_MPS  = 50_000_000   -- 50M
+local GENERIC_MIN_MPS = 2_000_000    -- 2M
 
 --==================================================
 -- 🌐 WEBHOOKS
 --==================================================
 local webhook_high    = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
-local webhook_index   = webhook_high
-local webhook_special = webhook_high
-
--- 👉 Webhook thứ 2: gửi TẤT CẢ pet > 50M
 local webhook_over50  = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
 --==================================================
@@ -344,7 +377,7 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
     Farm.Size = UDim2.new(0.2, 0, 1, 0)
     Farm.Position = UDim2.new(0.55, 0, 0, 0)
     Farm.BackgroundTransparency = 1
-    Farm.Text = tostring(mps) .. "/s"
+    Farm.Text = formatMpsShort(mps) .. "/s"
     Farm.TextColor3 = isOver50 and Color3.fromRGB(255, 200, 200) or Color3.fromRGB(180,180,190)
     Farm.Font = Enum.Font.Gotham
     Farm.TextSize = 13
@@ -371,8 +404,7 @@ local function AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
 end
 
 --==================================================
--- 📤 PROCESS PET → UI + WEBHOOK + AUTOJOIN (tùy)
---   allowAutoJoin = true cho webhook_high, false cho webhook_over50
+-- 📤 PROCESS PET → UI + WEBHOOK + AUTOJOIN
 --==================================================
 local autoJoinedJobs  = {}
 local function processPet(petName, mps, jobId, webhookUrl, allowAutoJoin, isOver50)
@@ -386,7 +418,7 @@ local function processPet(petName, mps, jobId, webhookUrl, allowAutoJoin, isOver
     local isTargetFlag = isTarget(petName)
     AddPetItem(petName, mps, jobId, isTargetFlag, isOver50)
 
-    -- Auto join chỉ cho nhánh allowAutoJoin (<=50M)
+    -- Auto join chỉ cho nhánh allowAutoJoin (≤50M)
     if allowAutoJoin and autoJoinEnabled then
         jobId = tostring(jobId or "")
         if jobId ~= "" and not autoJoinedJobs[jobId] then
@@ -404,7 +436,7 @@ local function processPet(petName, mps, jobId, webhookUrl, allowAutoJoin, isOver
     local content = table.concat({
         "🔔 **Pet Found!**",
         "🐾 Name: " .. tostring(petName),
-        "💸 MPS: " .. tostring(mps),
+        "💸 MPS: " .. formatMpsShort(mps) .. "/s",
         "🆔 Job ID: `" .. tostring(jobId) .. "`",
         "🌐 [JOIN HERE](" .. joinLink .. ")"
     }, "\n")
@@ -413,9 +445,43 @@ local function processPet(petName, mps, jobId, webhookUrl, allowAutoJoin, isOver
 end
 
 --==================================================
+-- 🔎 LẤY MPS TỪ PET:
+--   1) Nếu có pet.MPS.Value -> parseMps
+--   2) Nếu không, tìm TextLabel/Button trong pet có text chứa "/S" rồi parse
+--==================================================
+local function getMpsFromPet(pet)
+    -- case 1: Value object
+    local mpsObj = pet:FindFirstChild("MPS")
+    if mpsObj and mpsObj.Value ~= nil then
+        return parseMps(mpsObj.Value)
+    end
+
+    -- case 2: text trong BillboardGui / SurfaceGui
+    local bestText = nil
+    for _, d in ipairs(pet:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            local t = d.Text
+            if t and t ~= "" then
+                local up = t:upper()
+                if up:find("/S") or up:find("M/S") or up:find("PERSEC") then
+                    bestText = t
+                    break
+                end
+            end
+        end
+    end
+
+    if bestText then
+        return parseMps(bestText)
+    end
+
+    return 0
+end
+
+--==================================================
 -- 🔁 SCAN workspace.Pets MỖI 2s
---   • ≤50M → webhook_high (rule cũ)
---   • >50M → webhook_over50 (tất cả mọi con, không cần target)
+--   • 2M–50M + targets ≤50M → webhook_high (+ AutoJoin)
+--   • >50M → webhook_over50 (không AutoJoin, UI màu đỏ)
 --==================================================
 spawn(function()
     while task.wait(2) do
@@ -424,11 +490,7 @@ spawn(function()
         if petsFolder then
             for _, pet in ipairs(petsFolder:GetChildren()) do
                 local petName = pet.Name or "Unknown"
-                local mpsValue = 0
-                local mpsObj = pet:FindFirstChild("MPS")
-                if mpsObj and mpsObj.Value then
-                    mpsValue = tonumber(mpsObj.Value) or 0
-                end
+                local mpsValue = getMpsFromPet(pet)  -- <-- dùng hàm mới
 
                 -- Nhánh chính: 2M–50M + targets ≤50M
                 if shouldNotifyMain(petName, mpsValue) then
