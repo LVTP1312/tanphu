@@ -1,18 +1,18 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER v9.5 (FULL)
---   • Brainrot trong targets + mọi pet khác MPS ≥ 1M
+-- ⏳ TANPHU PETS FINDER v9.6 + SIDE UI 10M±
+--   • CHỈ brainrot trong targets
 --   • 1M–50M  → UI + Auto Join + webhook_high
 --   • >50M    → CHỈ webhook_over50 (không UI, không Auto Join)
+--   • Side UI (bấm viền trái "PF") hiển thị số lượng 10M+ / 10M-
 --   • Quét liên tục, người join sau vẫn bị quét
---   • ĐÃ FIX: không lấy tên kiểu "$250K" nữa
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v9_5_Loaded then
+if _G.TanPhuPetsFinder_v9_6_Loaded then
     warn("[PetsFinder] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v9_5_Loaded = true
+_G.TanPhuPetsFinder_v9_6_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -46,7 +46,7 @@ local function sendWebhook(url, payload)
 end
 
 --==================================================
--- 🎯 TARGET LIST (brainrot)
+-- 🎯 TARGET LIST (brainrot ONLY)
 --==================================================
 local targets = {
     'Chipso and Queso','La Casa Boo','Tang Tang Keletang','Headless Horseman',
@@ -73,6 +73,7 @@ end
 local function detectBrainrotName(model)
     if not model then return nil end
 
+    -- check tên model
     local nameLower = string.lower(model.Name or "")
     for i, tLower in ipairs(targetsLower) do
         if string.find(nameLower, tLower, 1, true) then
@@ -80,6 +81,7 @@ local function detectBrainrotName(model)
         end
     end
 
+    -- check TextLabel/TextButton con
     for _, d in ipairs(model:GetDescendants()) do
         if d:IsA("TextLabel") or d:IsA("TextButton") then
             local txt = d.Text
@@ -95,52 +97,6 @@ local function detectBrainrotName(model)
     end
 
     return nil
-end
-
--- ===== helper: check text có phải giá tiền không =====
-local function isLikelyPrice(text)
-    if not text or text == "" then return false end
-    local s = tostring(text):gsub("%s+", "")
-    -- dạng: $250K, 250K, 1.5M, 10B, 999999, $1,000,000 ...
-    if s:match("^[$€£]?[%d%.,]+[KMB]?$") then
-        return true
-    end
-    return false
-end
-
--- Tên “generic” cho pet không nằm trong targets (lấy text đẹp nhất, bỏ text kiểu $250K)
-local function getAnyDisplayName(model)
-    if not model then return "Unknown Pet" end
-
-    local best
-
-    -- ƯU TIÊN: TextLabel/TextButton có chữ cái, không phải giá tiền
-    for _, d in ipairs(model:GetDescendants()) do
-        if (d:IsA("TextLabel") or d:IsA("TextButton")) and type(d.Text) == "string" then
-            local t = d.Text
-            if t ~= "" and #t <= 40 and t:match("%a") and not isLikelyPrice(t) then
-                best = t
-                break
-            end
-        end
-    end
-
-    if best then
-        return best
-    end
-
-    -- FALLBACK: dùng tên model
-    local n = tostring(model.Name or "Unknown Pet")
-
-    -- nếu tên toàn số / ký tự không phải chữ thì coi như Unknown
-    if not n:match("%a") then
-        return "Unknown Pet"
-    end
-
-    if #n > 40 then
-        n = n:sub(1, 37) .. "..."
-    end
-    return n
 end
 
 --==================================================
@@ -182,17 +138,67 @@ end
 --==================================================
 -- NGƯỠNG & WEBHOOK
 --==================================================
-local MIN_MPS       = 1_000_000      -- cả brainrot & other đều ≥1M mới báo
-local SPLIT_MPS     = 50_000_000
+local MIN_MPS       = 1_000_000      -- brainrot ≥1M mới báo
+local SPLIT_MPS     = 50_000_000     -- chia 50M
+local TEN_MPS       = 10_000_000     -- ngưỡng 10M cho side UI
 
 local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
--- mỗi pet (Instance) 1 best MPS riêng
+-- mỗi pet (Instance) 1 best MPS riêng, để không spam lại nếu MPS không tăng
 local bestMpsPerPet = {}
 
 --==================================================
--- UI + AUTO JOIN (1M–50M)
+-- SIDE UI 10M+ / 10M-
+--==================================================
+local countLow10   = 0   -- 1M–<10M
+local countHigh10  = 0   -- ≥10M–≤50M
+local bucketByPet  = {}  -- pet -> "LOW" / "HIGH"
+
+local sideLowLabel, sideHighLabel -- sẽ gán trong createUI
+
+local function updateSideLabels()
+    if sideLowLabel then
+        sideLowLabel.Text = "10M-  : "..tostring(countLow10)
+    end
+    if sideHighLabel then
+        sideHighLabel.Text = "10M+  : "..tostring(countHigh10)
+    end
+end
+
+local function updateTenMBucket(pet, mps)
+    local newBucket
+    if mps >= TEN_MPS and mps <= SPLIT_MPS then
+        newBucket = "HIGH"
+    elseif mps >= MIN_MPS and mps < TEN_MPS then
+        newBucket = "LOW"
+    else
+        newBucket = nil
+    end
+
+    local oldBucket = bucketByPet[pet]
+    if oldBucket == newBucket then
+        return
+    end
+
+    if oldBucket == "LOW" then
+        countLow10 = math.max(0, countLow10 - 1)
+    elseif oldBucket == "HIGH" then
+        countHigh10 = math.max(0, countHigh10 - 1)
+    end
+
+    if newBucket == "LOW" then
+        countLow10 = countLow10 + 1
+    elseif newBucket == "HIGH" then
+        countHigh10 = countHigh10 + 1
+    end
+
+    bucketByPet[pet] = newBucket
+    updateSideLabels()
+end
+
+--==================================================
+-- UI + AUTO JOIN (1M–50M, brainrot ONLY)
 --==================================================
 local autoJoinEnabled = false
 local autoJoinedJobs  = {}
@@ -203,6 +209,7 @@ local function createUI()
     ScreenGui.ResetOnSpawn = false
     ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
+    -- ===== MAIN FRAME =====
     local Frame = Instance.new("Frame")
     Frame.Size = UDim2.new(0, 450, 0, 380)
     Frame.Position = UDim2.new(0.5, -225, 0.5, -190)
@@ -334,15 +341,88 @@ local function createUI()
         Scrolling.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 20)
     end)
 
+    -- ===== SIDE TOGGLE + SIDE FRAME 10M =====
+    local SideToggle = Instance.new("TextButton")
+    SideToggle.Size = UDim2.new(0, 26, 0, 80)
+    SideToggle.Position = UDim2.new(0, 0, 0.5, -40)
+    SideToggle.BackgroundColor3 = Color3.fromRGB(0, 160, 220)
+    SideToggle.BorderSizePixel = 0
+    SideToggle.Text = "PF"
+    SideToggle.Font = Enum.Font.GothamBold
+    SideToggle.TextSize = 16
+    SideToggle.TextColor3 = Color3.fromRGB(255,255,255)
+    SideToggle.Parent = ScreenGui
+
+    local SideToggleCorner = Instance.new("UICorner")
+    SideToggleCorner.CornerRadius = UDim.new(0, 6)
+    SideToggleCorner.Parent = SideToggle
+
+    local SideFrame = Instance.new("Frame")
+    SideFrame.Size = UDim2.new(0, 180, 0, 90)
+    SideFrame.Position = UDim2.new(0, 32, 0.5, -45)
+    SideFrame.BackgroundColor3 = Color3.fromRGB(20,20,26)
+    SideFrame.BorderSizePixel = 0
+    SideFrame.Visible = false
+    SideFrame.Parent = ScreenGui
+
+    local SideCorner = Instance.new("UICorner")
+    SideCorner.CornerRadius = UDim.new(0, 10)
+    SideCorner.Parent = SideFrame
+
+    local SideStroke = Instance.new("UIStroke")
+    SideStroke.Thickness = 1.2
+    SideStroke.Color = Color3.fromRGB(0, 200, 255)
+    SideStroke.Transparency = 0.3
+    SideStroke.Parent = SideFrame
+
+    local SideTitle = Instance.new("TextLabel")
+    SideTitle.Size = UDim2.new(1, -10, 0, 22)
+    SideTitle.Position = UDim2.new(0, 5, 0, 4)
+    SideTitle.BackgroundTransparency = 1
+    SideTitle.Text = "Brainrot 10M stats"
+    SideTitle.Font = Enum.Font.GothamSemibold
+    SideTitle.TextSize = 14
+    SideTitle.TextColor3 = Color3.fromRGB(200, 230, 255)
+    SideTitle.TextXAlignment = Enum.TextXAlignment.Left
+    SideTitle.Parent = SideFrame
+
+    sideLowLabel = Instance.new("TextLabel")
+    sideLowLabel.Size = UDim2.new(1, -10, 0, 24)
+    sideLowLabel.Position = UDim2.new(0, 5, 0, 30)
+    sideLowLabel.BackgroundTransparency = 1
+    sideLowLabel.Font = Enum.Font.Gotham
+    sideLowLabel.TextSize = 14
+    sideLowLabel.TextColor3 = Color3.fromRGB(220,220,230)
+    sideLowLabel.TextXAlignment = Enum.TextXAlignment.Left
+    sideLowLabel.Text = "10M-  : 0"
+    sideLowLabel.Parent = SideFrame
+
+    sideHighLabel = Instance.new("TextLabel")
+    sideHighLabel.Size = UDim2.new(1, -10, 0, 24)
+    sideHighLabel.Position = UDim2.new(0, 5, 0, 52)
+    sideHighLabel.BackgroundTransparency = 1
+    sideHighLabel.Font = Enum.Font.Gotham
+    sideHighLabel.TextSize = 14
+    sideHighLabel.TextColor3 = Color3.fromRGB(220,220,230)
+    sideHighLabel.TextXAlignment = Enum.TextXAlignment.Left
+    sideHighLabel.Text = "10M+  : 0"
+    sideHighLabel.Parent = SideFrame
+
+    updateSideLabels()
+
+    SideToggle.MouseButton1Click:Connect(function()
+        SideFrame.Visible = not SideFrame.Visible
+    end)
+
     return ScreenGui, Frame, Scrolling, UIListLayout
 end
 
 local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
 
-local function AddPetItem(petName, mps, jobId, isBrainrot)
+local function AddPetItem(petName, mps, jobId)
     local Item = Instance.new("Frame")
     Item.Size = UDim2.new(1, -8, 0, 42)
-    Item.BackgroundColor3 = isBrainrot and Color3.fromRGB(32,40,55) or Color3.fromRGB(30,35,45)
+    Item.BackgroundColor3 = Color3.fromRGB(32,40,55)
     Item.BorderSizePixel = 0
     Item.Parent = Scrolling
 
@@ -352,7 +432,7 @@ local function AddPetItem(petName, mps, jobId, isBrainrot)
 
     local ItemStroke = Instance.new("UIStroke")
     ItemStroke.Thickness = 1
-    ItemStroke.Color = isBrainrot and Color3.fromRGB(0,200,255) or Color3.fromRGB(120,200,120)
+    ItemStroke.Color = Color3.fromRGB(0,200,255)
     ItemStroke.Transparency = 0.15
     ItemStroke.Parent = Item
 
@@ -429,9 +509,9 @@ local function getMpsFromModel(pet)
 end
 
 --==================================================
--- MAIN LOOP – luôn quét, kể cả người join sau
+-- MAIN LOOP – luôn quét, chỉ brainrot
 --==================================================
-warn("[PetsFinder] ✅ v9.5 started.")
+warn("[PetsFinder] ✅ v9.6 + SideUI started.")
 
 spawn(function()
     while task.wait(3) do
@@ -452,9 +532,10 @@ spawn(function()
         end
 
         for _, pet in ipairs(candidates) do
-            local brainrotName = detectBrainrotName(pet)
-            local isBrainrot   = brainrotName ~= nil
-            local displayName  = brainrotName or getAnyDisplayName(pet)
+            local displayName = detectBrainrotName(pet)
+            if not displayName then
+                continue -- không phải brainrot
+            end
 
             local mps = select(1, getMpsFromModel(pet))
             if mps < MIN_MPS then
@@ -463,30 +544,26 @@ spawn(function()
 
             local prevBest = bestMpsPerPet[pet] or 0
             if mps <= prevBest then
+                -- không tăng MPS => không cần báo lại
                 continue
             end
             bestMpsPerPet[pet] = mps
 
+            -- cập nhật bucket 10M-/10M+
+            updateTenMBucket(pet, mps)
+
             warn(string.format(
-                "[PetsFinder] Found %s (%s) | MPS=%d (prev=%d)",
-                displayName,
-                isBrainrot and "Brainrot" or "Other",
-                mps,
-                prevBest
+                "[PetsFinder] Found %s (Brainrot) | MPS=%d (prev=%d)",
+                displayName, mps, prevBest
             ))
 
             local over50   = (mps > SPLIT_MPS)
             local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
                 :format(placeId, jobId)
 
-            local title
-            if isBrainrot then
-                title = over50 and "🔔 **Pet >50M Found! (Brainrot)**"
-                               or  "🔔 **Pet Found! (Brainrot, 1M–50M)**"
-            else
-                title = over50 and "🔔 **Pet >50M Found! (Other)**"
-                               or  "🔔 **Pet Found! (Other, 1M–50M)**"
-            end
+            local title = over50
+                and "🔔 **Pet >50M Found! (Brainrot)**"
+                or  "🔔 **Pet Found! (Brainrot, 1M–50M)**"
 
             local content = table.concat({
                 title,
@@ -497,11 +574,11 @@ spawn(function()
             }, "\n")
 
             if over50 then
-                -- >50M: chỉ webhook
+                -- >50M: chỉ webhook VIP
                 sendWebhook(webhook_over50, { content = content })
             else
-                -- 1M–50M: UI + Auto Join + webhook_high (cả brainrot & other)
-                AddPetItem(displayName, mps, jobId, isBrainrot)
+                -- 1M–50M: UI + Auto Join + webhook_high
+                AddPetItem(displayName, mps, jobId)
 
                 if autoJoinEnabled and not autoJoinedJobs[jobId] then
                     autoJoinedJobs[jobId] = true
