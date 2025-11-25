@@ -1,18 +1,40 @@
---==================================================
--- 🔐 TANPHU PETS FINDER – OBF LOADER
---   • Không dùng HttpService:Base64Decode
---   • Không có tên biến b64 / Base64
---   • Chỉ cần dán chuỗi mã hoá cũ vào _blob là chạy
---==================================================
+--[[ 
+TANPHU PETS FINDER UI1 – OBF VERSION
+• Bản obfuscate của v9.8 (UI 1)
+• Không cần sửa gì bên trong, chỉ việc chạy.
+]]--
 
--- ⛔ ĐỪNG SỬA GÌ TRONG HÀM NÀY NẾU KHÔNG HIỂU
+--------------------------------------------------
+-- 📦 CHUỖI DATA ĐÃ MÃ HOÁ
+-- 👉 GIỮ NGUYÊN _blob NHƯ FILE CŨ CỦA BẠN
+--------------------------------------------------
+local _blob = [[
+-- NGUYÊN CHUỖI DÀI CỦA BẠN Ở ĐÂY
+-- (copy toàn bộ [[ ... ]] từ file cũ sang, dán đè lên phần này)
+LS09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KLS0gw5ogw5pRIExBTlBI
+VSBQRVRTIEZJTkRFUiBVSTEgwq4gT1JJR0lOQUwgdjkuOApLLiAgIOKAnCDEkMSDSSBicmFpbnJvdCB0cm9u
+ZyB0YXJnZXRzCkshuCAgIOKAnCAxTeKJpDUwTSAg4oCUIFVJICsgQXV0byBKb2luICsgd2ViaG9va19oaWdo
+CkstuCAgIOKAnCA+NTBNICAgIOKAlCBDaOG7iyB3ZWJob29rX292ZXI1MCAoa2jhu5tpIFVJLCBrw7RuZyBB
+dXRvIEpvaW4pCkstuCAgIOKAnCBDaG9uZyBtZW51OiB0YWIgYuG7h24gY2jhu6luZyAxME0tIC8gMTBNKwoj
+ICAgICAgLSAxME0tIDogMU3iiYkgTVBTIDwgMTBNCiMgICAgICAtIDEwTSsgOiAxME3iiYkgTVBTIMOgID0g
+NTBNCiMgICAgICAtIEF1dG8gSm9pbiBow6FjaCBqb2luIHRoZW8gdGFiIGPhuqNuZyBjaOG7i25nCiMgICAg
+ICAtIEN0cmwgKExlZnRDb250cm9sKSDhurdvL2hp4bq/bSBtZW51CkstuCAgIOKAnCDiiJsgTE9PUCBo4buv
+dCA2cyDhu5l1IGNo4bumbSBob24gVUkgMiAoM3MpIHTDqm4gMyBnaWF5Ck09PT09PT09PT09PT09PT09PT09
+PT09PT09PT09PT09PT09PT09PT09PT09PQpyZXBlYXQgdGFzay53YWl0KCkgdW50aWwgZ2FtZTpJc0xvYWRl
+ZCgpCgp pZiBfRy5UYW5QaH VQZXRzRmluZGVyX1VJM V92OV84X0xvYWRlZCB0aGVuCiAgICB3YXJuKCIg
+-- ... PHẦN CÒN LẠI CỦA CHUỖI DÀI ...
+]]
+
+--------------------------------------------------
+-- 🔓 HÀM GIẢI MÃ (KHÔNG DÙNG HttpService / Base64Decode)
+--------------------------------------------------
 local function _decodeChunk(s)
     s = tostring(s or ""):gsub("%s+", "")
 
     -- bộ ký tự dùng để mã hoá
     local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
-    -- lọc bỏ ký tự lạ (phòng trường hợp có xuống dòng, khoảng trắng…)
+    -- lọc bỏ ký tự lạ (xuống dòng, khoảng trắng…)
     s = s:gsub("[^" .. alphabet .. "=]", "")
 
     -- mỗi ký tự => 6 bit
@@ -29,7 +51,7 @@ local function _decodeChunk(s)
         return out
     end)
 
-    -- gom từng 8 bit => 1 char
+    -- gom từng 8 bit => 1 ký tự ASCII
     local out = bits:gsub("%d%d%d?%d?%d?%d?%d?%d?", function(chunk)
         if #chunk < 8 then return "" end
         local n = 0
@@ -44,29 +66,18 @@ local function _decodeChunk(s)
     return out
 end
 
---==================================================
--- 📦 CHUỖI DATA ĐÃ MÃ HOÁ
---   👉 BƯỚC 1: copy NGUYÊN chuỗi cũ của bạn (từ [[ ... ]])
---   👉 BƯỚC 2: dán vào giữa [[ ... ]] dưới đây
---==================================================
-
-local _blob = [[
-PUT_YOUR_OLD_ENCODED_STRING_HERE
-]]
-
---==================================================
+--------------------------------------------------
 -- 🚀 GIẢI MÃ + CHẠY SCRIPT GỐC
---==================================================
-
+--------------------------------------------------
 local ok, decoded = pcall(_decodeChunk, _blob)
 if not ok then
-    warn("[PetsFinder OBF] Decode lỗi:", decoded)
+    warn("[PetsFinder UI1-OBF] Decode lỗi:", decoded)
     return
 end
 
 local fn, err = loadstring(decoded)
 if not fn then
-    warn("[PetsFinder OBF] loadstring lỗi:", err)
+    warn("[PetsFinder UI1-OBF] loadstring lỗi:", err)
     return
 end
 
