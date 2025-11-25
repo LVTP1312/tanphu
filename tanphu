@@ -1,3 +1,5 @@
+-- 🔐 ENCODER - dùng để mã hoá script gốc (chỉ chạy local)
+
 local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 local function encode(data)
@@ -5,7 +7,6 @@ local function encode(data)
     local result = {}
     local pad = (3 - (#bytes % 3)) % 3
 
-    -- thêm 0 padding để chia 3
     for i = 1, pad do
         table.insert(bytes, 0)
     end
@@ -29,7 +30,7 @@ local function encode(data)
     return encoded
 end
 
--- ⚠️ DÁN SCRIPT GỐC CỦA BẠN VÀO ĐÂY
+-- ⚠️ DÁN **TOÀN BỘ SCRIPT GỐC UI1** VÀO ĐÂY
 local SOURCE = [--==================================================
 -- ⏳ TANPHU PETS FINDER UI 1 (v9.8)
 --   • CHỈ brainrot trong targets
@@ -639,11 +640,12 @@ spawn(function()
         end
     end
 end)
-]]
+
+]
 
 -- IN RA KẾT QUẢ
 local out = encode(SOURCE)
-setclipboard(out)  -- nếu executor có, sẽ copy sẵn vào clipboard
+pcall(setclipboard, out)  -- nếu executor hỗ trợ thì copy sẵn
 print("==== ENCODE DONE ====")
 print(out)
 print("==== COPY HẾT DÒNG TRÊN ====")
