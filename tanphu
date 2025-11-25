@@ -1,7 +1,7 @@
 --==================================================
--- TANPHU GLOBAL PETS FINDER (UI + DISCORD)
+-- TANPHU GLOBAL PETS FINDER (UI + CENTRAL SERVER)
 --  • UI 10M- / 10M+ dùng chung cho mọi người
---  • Đọc list từ Discord channel bằng BOT TOKEN
+--  • Đọc list từ server Python (PC bạn) qua API_URL
 --  • Scanner local + gửi webhook (ENABLE_SCANNER)
 --==================================================
 
@@ -16,12 +16,13 @@ _G.TanPhu_GlobalPetsFinder_Loaded = true
 --========================
 -- 🔧 CONFIG
 --========================
-local BOT_TOKEN      = "MTQ0Mjg4NjkxOTAyODQ3Mzk3OA.G_rKmh.o2huGw3q0_mGHatoG7aqZOWBf0ZObnbcewZBUk"
-local CHANNEL_ID     = "1411328401096179713"
-local ENABLE_SCANNER = true          -- true = client này scan & gửi webhook, false = chỉ đọc Discord
-local FETCH_INTERVAL = 6             -- giây, chu kỳ đọc Discord
+-- ⚠️ ĐỔI URL NÀY THÀNH LINK NGROK CỦA BẠN
+local API_URL       = "https://reparative-mira-dominatingly.ngrok-free.dev"
 
--- Webhook để scanner local gửi
+local ENABLE_SCANNER = true          -- true = client này scan & gửi webhook, false = chỉ đọc list
+local FETCH_INTERVAL = 6             -- giây, chu kỳ gọi API
+
+-- Webhook để scanner local gửi (dùng chung cho tất cả mọi người)
 local WEBHOOK_HIGH   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK" -- 1M–50M
 local WEBHOOK_OVER50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb" -- >50M
 
@@ -44,7 +45,7 @@ local http_request_impl =
     or (typeof(http) == "table" and typeof(http.request) == "function" and http.request)
 
 if not http_request_impl then
-    warn("[GlobalPetsFinder] ❌ Không có HTTP request. UI vẫn hiện nhưng không đọc Discord / gửi webhook được.")
+    warn("[GlobalPetsFinder] ❌ Không có HTTP request. UI vẫn hiện nhưng không gọi API / gửi webhook được.")
 end
 
 local function safeRequest(opts)
@@ -75,7 +76,7 @@ local function sendWebhook(url, payload)
 end
 
 --========================
--- 🎯 TARGET LIST (BRAINROT)
+-- 🎯 TARGET LIST (BRAINROT) – dùng cho SCANNER
 --========================
 local targets = {
     'Chipso and Queso','La Casa Boo','Tang Tang Keletang','Headless Horseman',
@@ -101,7 +102,6 @@ end
 local function detectBrainrotName(model)
     if not model then return nil end
 
-    -- tên model
     local nameLower = string.lower(model.Name or "")
     for i, tLower in ipairs(targetsLower) do
         if string.find(nameLower, tLower, 1, true) then
@@ -109,7 +109,6 @@ local function detectBrainrotName(model)
         end
     end
 
-    -- label con
     for _, d in ipairs(model:GetDescendants()) do
         if d:IsA("TextLabel") or d:IsA("TextButton") then
             local txt = d.Text
@@ -163,10 +162,10 @@ local function formatMpsShort(v)
     end
 end
 
--- NGƯỠNG
-local MIN_MPS       = 1_000_000      -- ≥1M mới tính
-local TEN_MPS       = 10_000_000     -- chia tab
-local SPLIT_MPS     = 50_000_000     -- >50M → chỉ webhook_over50 (không vào UI)
+-- NGƯỠNG (giống Python)
+local MIN_MPS       = 1_000_000
+local TEN_MPS       = 10_000_000
+local SPLIT_MPS     = 50_000_000
 
 --========================
 -- UI + AUTO JOIN
@@ -505,27 +504,21 @@ end
 createUI()
 
 --========================
--- 📥 ĐỌC LIST PET TỪ DISCORD
+-- 📥 LUỒNG UI – GỌI API /list
 --========================
-local function fetchMessagesFromDiscord()
-    if not http_request_impl or BOT_TOKEN == "" or CHANNEL_ID == "" then
-        return {}
-    end
+local function fetchPetsFromAPI()
+    if not http_request_impl then return {} end
 
-    local url = ("https://discord.com/api/v10/channels/%s/messages?limit=40"):format(CHANNEL_ID)
     local res, err = safeRequest({
-        Url = url,
-        Method = "GET",
-        Headers = {
-            ["Authorization"] = "Bot " .. BOT_TOKEN
-        }
+        Url = API_URL,
+        Method = "GET"
     })
     if not res then
-        warn("[GlobalPetsFinder] Discord HTTP error:", err)
+        warn("[GlobalPetsFinder] API HTTP error:", err)
         return {}
     end
     if res.StatusCode ~= 200 then
-        warn("[GlobalPetsFinder] Discord Status:", res.StatusCode, res.Body or "")
+        warn("[GlobalPetsFinder] API Status:", res.StatusCode, res.Body or "")
         return {}
     end
 
@@ -533,78 +526,54 @@ local function fetchMessagesFromDiscord()
         return HttpService:JSONDecode(res.Body)
     end)
     if not ok or type(data) ~= "table" then
-        warn("[GlobalPetsFinder] JSON decode error")
+        warn("[GlobalPetsFinder] API JSON decode error")
         return {}
     end
 
     return data
 end
 
--- Parse 1 message -> {name, mps, jobId}
-local function parsePetFromMessage(msg)
-    if not msg or type(msg.content) ~= "string" then return nil end
-    local content = msg.content
-
-    -- lấy tên
-    local name = content:match("🐾%s*Name:%s*(.-)\n")
-        or content:match("Name:%s*(.-)\n")
-    -- lấy MPS text
-    local mpsText = content:match("💸%s*MPS:%s*([^\n]+)")
-        or content:match("MPS:%s*([^\n]+)")
-    -- lấy JobId
-    local jobId = content:match("🆔%s*Job ID:%s*`([%w%-_]+)`")
-        or content:match("Job ID:%s*`?([%w%-_]+)`?")
-
-    if not (name and mpsText and jobId) then
-        return nil
-    end
-
-    local mps = parseMps(mpsText)
-    if mps < MIN_MPS or mps > SPLIT_MPS then
-        return nil -- chỉ lấy 1M–50M cho UI này
-    end
-
-    return {
-        name  = name,
-        mps   = mps,
-        jobId = jobId,
-    }
-end
-
 task.spawn(function()
-    warn("[GlobalPetsFinder] Discord UI loop started.")
+    warn("[GlobalPetsFinder] API UI loop started.")
     while task.wait(FETCH_INTERVAL) do
-        local msgs = fetchMessagesFromDiscord()
+        local pets = fetchPetsFromAPI()
 
         clearScrolling(ScrollingLow)
         clearScrolling(ScrollingHigh)
         autoJoinedJobs = {}
 
-        local seen = {} -- key = name|jobId
+        local seen = {}
 
-        -- Discord trả newest trước → duyệt từ trên xuống
-        for _, msg in ipairs(msgs) do
-            local pet = parsePetFromMessage(msg)
-            if pet then
-                local key = pet.name .. "|" .. pet.jobId
-                if not seen[key] then
-                    seen[key] = true
+        for _, pet in ipairs(pets) do
+            local name  = pet.name
+            local jobId = pet.jobId
+            local mps   = tonumber(pet.mps) or 0
 
-                    local bucket = (pet.mps >= TEN_MPS) and "HIGH" or "LOW"
-                    if bucket == "LOW" then
-                        AddPetItem(ScrollingLow, pet.name, pet.mps, pet.jobId)
-                    else
-                        AddPetItem(ScrollingHigh, pet.name, pet.mps, pet.jobId)
-                    end
+            if not (name and jobId) then
+                continue
+            end
+            if mps < MIN_MPS or mps > SPLIT_MPS then
+                continue
+            end
 
-                    -- Auto join
-                    if autoJoinEnabled and bucket == currentTab and not autoJoinedJobs[pet.jobId] then
-                        autoJoinedJobs[pet.jobId] = true
-                        pcall(function()
-                            TeleportService:TeleportToPlaceInstance(game.PlaceId, pet.jobId, LocalPlayer)
-                        end)
-                    end
-                end
+            local key = name .. "|" .. jobId
+            if seen[key] then
+                continue
+            end
+            seen[key] = true
+
+            local bucket = (mps >= TEN_MPS) and "HIGH" or "LOW"
+            if bucket == "LOW" then
+                AddPetItem(ScrollingLow, name, mps, jobId)
+            else
+                AddPetItem(ScrollingHigh, name, mps, jobId)
+            end
+
+            if autoJoinEnabled and bucket == currentTab and not autoJoinedJobs[jobId] then
+                autoJoinedJobs[jobId] = true
+                pcall(function()
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
+                end)
             end
         end
     end
