@@ -1,9 +1,10 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER v9.5
+-- ⏳ TANPHU PETS FINDER v9.5 (FULL)
 --   • Brainrot trong targets + mọi pet khác MPS ≥ 1M
 --   • 1M–50M  → UI + Auto Join + webhook_high
 --   • >50M    → CHỈ webhook_over50 (không UI, không Auto Join)
 --   • Quét liên tục, người join sau vẫn bị quét
+--   • ĐÃ FIX: không lấy tên kiểu "$250K" nữa
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
@@ -96,21 +97,46 @@ local function detectBrainrotName(model)
     return nil
 end
 
--- Tên “generic” cho pet không nằm trong targets (lấy text đẹp nhất)
-local function getAnyDisplayName(model)
-    if not model then return "Unknown" end
+-- ===== helper: check text có phải giá tiền không =====
+local function isLikelyPrice(text)
+    if not text or text == "" then return false end
+    local s = tostring(text):gsub("%s+", "")
+    -- dạng: $250K, 250K, 1.5M, 10B, 999999, $1,000,000 ...
+    if s:match("^[$€£]?[%d%.,]+[KMB]?$") then
+        return true
+    end
+    return false
+end
 
-    -- ưu tiên TextLabel/TextButton có chữ cái, ngắn gọn
+-- Tên “generic” cho pet không nằm trong targets (lấy text đẹp nhất, bỏ text kiểu $250K)
+local function getAnyDisplayName(model)
+    if not model then return "Unknown Pet" end
+
+    local best
+
+    -- ƯU TIÊN: TextLabel/TextButton có chữ cái, không phải giá tiền
     for _, d in ipairs(model:GetDescendants()) do
-        if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text and d.Text ~= "" then
-            local t = tostring(d.Text)
-            if #t <= 40 and t:match("%a") then
-                return t
+        if (d:IsA("TextLabel") or d:IsA("TextButton")) and type(d.Text) == "string" then
+            local t = d.Text
+            if t ~= "" and #t <= 40 and t:match("%a") and not isLikelyPrice(t) then
+                best = t
+                break
             end
         end
     end
 
-    local n = tostring(model.Name or "Unknown")
+    if best then
+        return best
+    end
+
+    -- FALLBACK: dùng tên model
+    local n = tostring(model.Name or "Unknown Pet")
+
+    -- nếu tên toàn số / ký tự không phải chữ thì coi như Unknown
+    if not n:match("%a") then
+        return "Unknown Pet"
+    end
+
     if #n > 40 then
         n = n:sub(1, 37) .. "..."
     end
