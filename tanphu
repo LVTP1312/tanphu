@@ -1,32 +1,42 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER UI 1 (v9.9)
---   • CHỈ brainrot trong targets
---   • 1M–50M  → UI + Auto Join + webhook_high
---   • >50M    → VẪN LÊN UI (tab 10M+), KHÔNG Auto Join, webhook_over50
---   • Menu: tab bên trái 10M- / 10M+
---       - 10M- : 1M ≤ MPS < 10M
---       - 10M+ : MPS ≥ 10M (kể cả >50M)
---   • Auto Join chỉ join theo tab đang chọn & chỉ join tới 50M
---   • Ctrl (LeftControl) ẩn/hiện menu
---   • ⏱ LOOP = 6s  → chậm hơn UI 2 (3s) đúng 3 giây
+-- TANPHU GLOBAL PETS FINDER (UI + DISCORD)
+--  • UI 10M- / 10M+ dùng chung cho mọi người
+--  • Đọc list từ Discord channel bằng BOT TOKEN
+--  • (Optional) Scanner local + gửi webhook
 --==================================================
+
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_UI1_v9_9_Loaded then
-    warn("[PetsFinder UI1] Script đã chạy, không chạy lại.")
+if _G.TanPhu_GlobalPetsFinder_Loaded then
+    warn("[GlobalPetsFinder] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_UI1_v9_9_Loaded = true
+_G.TanPhu_GlobalPetsFinder_Loaded = true
 
+--========================
+-- 🔧 CONFIG
+--========================
+local BOT_TOKEN      = "MTQ0Mjg4NjkxOTAyODQ3Mzk3OA.GoAlxT.jZhdgqb7J-bzk32vQMK0aIkidGakByvOw64p8k"
+local CHANNEL_ID     = "1411328401096179713"
+local ENABLE_SCANNER = true          -- bật/tắt scanner local + webhook
+local FETCH_INTERVAL = 6             -- giây, chu kỳ đọc Discord
+
+-- Webhook để scanner local gửi (nếu ENABLE_SCANNER = true)
+local WEBHOOK_HIGH   = "https://discordapp.com/api/webhooks/xxxxxxxxxxxxxxxxxxxx"  -- 1M–50M
+local WEBHOOK_OVER50 = "https://discordapp.com/api/webhooks/xxxxxxxxxxxxxxxxxxxx"  -- >50M (nếu cần)
+
+--========================
+-- SERVICES
+--========================
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local UIS             = game:GetService("UserInputService")
 local LocalPlayer     = Players.LocalPlayer
 
---==================================================
--- HTTP IMPL (KHÔNG RETURN SỚM NỮA)
---==================================================
+--========================
+-- HTTP IMPL
+--========================
 local http_request_impl =
     (typeof(syn) == "table" and typeof(syn.request) == "function" and syn.request)
     or (typeof(http_request) == "function" and http_request)
@@ -34,30 +44,39 @@ local http_request_impl =
     or (typeof(http) == "table" and typeof(http.request) == "function" and http.request)
 
 if not http_request_impl then
-    warn("[PetsFinder UI1] ⚠️ Không tìm thấy HTTP request, chỉ hiện UI (không gửi webhook).")
+    warn("[GlobalPetsFinder] ❌ Không có HTTP request. UI vẫn hiện nhưng không đọc Discord / gửi webhook được.")
+end
+
+local function safeRequest(opts)
+    if not http_request_impl then return nil, "no_http" end
+    local ok, res = pcall(http_request_impl, opts)
+    if not ok then
+        return nil, res
+    end
+    return res, nil
 end
 
 local function sendWebhook(url, payload)
-    if not http_request_impl then
-        -- executor không có HTTP → bỏ qua webhook
-        return
-    end
-    local ok, err = pcall(function()
-        http_request_impl({
-            Url = url,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = HttpService:JSONEncode(payload)
-        })
-    end)
-    if not ok then
-        warn("[PetsFinder UI1] HTTP error:", err)
+    if not http_request_impl then return end
+    if not url or url == "" then return end
+
+    local body = HttpService:JSONEncode(payload)
+    local res, err = safeRequest({
+        Url = url,
+        Method = "POST",
+        Headers = { ["Content-Type"] = "application/json" },
+        Body = body
+    })
+    if not res then
+        warn("[GlobalPetsFinder] Webhook error:", err)
+    elseif res.StatusCode and res.StatusCode >= 300 then
+        warn("[GlobalPetsFinder] Webhook HTTP", res.StatusCode)
     end
 end
 
---==================================================
--- 🎯 TARGET LIST (brainrot ONLY)
---==================================================
+--========================
+-- 🎯 TARGET LIST (BRAINROT)
+--========================
 local targets = {
     'Chipso and Queso','La Casa Boo','Tang Tang Keletang','Headless Horseman',
     'Strawberry Elephant','Chicleteira Bicicleteira','Los Chicleteiras',
@@ -79,11 +98,10 @@ for _, t in ipairs(targets) do
     table.insert(targetsLower, string.lower(t))
 end
 
--- Trả về tên brainrot nếu model chứa 1 trong các tên targets
 local function detectBrainrotName(model)
     if not model then return nil end
 
-    -- check tên model
+    -- tên model
     local nameLower = string.lower(model.Name or "")
     for i, tLower in ipairs(targetsLower) do
         if string.find(nameLower, tLower, 1, true) then
@@ -91,7 +109,7 @@ local function detectBrainrotName(model)
         end
     end
 
-    -- check TextLabel/TextButton con
+    -- label con
     for _, d in ipairs(model:GetDescendants()) do
         if d:IsA("TextLabel") or d:IsA("TextButton") then
             local txt = d.Text
@@ -109,9 +127,9 @@ local function detectBrainrotName(model)
     return nil
 end
 
---==================================================
+--========================
 -- 💰 PARSE MPS
---==================================================
+--========================
 local function parseMps(raw)
     if raw == nil then return 0 end
     if typeof(raw) == "number" then
@@ -145,31 +163,23 @@ local function formatMpsShort(v)
     end
 end
 
---==================================================
--- NGƯỠNG & WEBHOOK
---==================================================
-local MIN_MPS       = 1_000_000      -- brainrot ≥1M mới báo
-local TEN_MPS       = 10_000_000     -- ngưỡng 10M chia tab
-local SPLIT_MPS     = 50_000_000     -- >50M vào webhook_over50
+-- NGƯỠNG
+local MIN_MPS       = 1_000_000      -- ≥1M mới tính
+local TEN_MPS       = 10_000_000     -- chia tab
+local SPLIT_MPS     = 50_000_000     -- >50M → chỉ webhook_over50 (không vào UI)
 
-local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
-local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
-
--- mỗi pet (Instance) 1 best MPS riêng, để không spam lại nếu MPS không tăng
-local bestMpsPerPet = {}
-
---==================================================
+--========================
 -- UI + AUTO JOIN
---==================================================
+--========================
 local autoJoinEnabled = false
 local autoJoinedJobs  = {}
-local currentTab      = "HIGH"   -- "LOW" hoặc "HIGH"
+local currentTab      = "HIGH"   -- "LOW" or "HIGH"
 
 local ScreenGui, MainFrame
 local ScrollingLow, ScrollingHigh
 
 local function AddPetItem(scrolling, petName, mps, jobId)
-    if not scrolling then return end  -- phòng trường hợp nil
+    if not scrolling then return end
 
     local Item = Instance.new("Frame")
     Item.Name = "PetItem"
@@ -229,13 +239,21 @@ local function AddPetItem(scrolling, petName, mps, jobId)
     end)
 end
 
+local function clearScrolling(frame)
+    if not frame then return end
+    for _, c in ipairs(frame:GetChildren()) do
+        if c:IsA("Frame") and c.Name == "PetItem" then
+            c:Destroy()
+        end
+    end
+end
+
 local function createUI()
     ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "TanPhuPetsFinder_UI1"
+    ScreenGui.Name = "TanPhuGlobalPetsFinder"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
-    -- ===== MAIN FRAME =====
     MainFrame = Instance.new("Frame")
     MainFrame.Size = UDim2.new(0, 450, 0, 380)
     MainFrame.Position = UDim2.new(0.5, -225, 0.5, -190)
@@ -294,7 +312,6 @@ local function createUI()
     CtrlHint.TextXAlignment = Enum.TextXAlignment.Right
     CtrlHint.Parent = TitleBar
 
-    --===== TOP BAR AUTO JOIN =====
     local ControlBar = Instance.new("Frame")
     ControlBar.Size = UDim2.new(1, -20, 0, 32)
     ControlBar.Position = UDim2.new(0, 10, 0, 48)
@@ -356,7 +373,6 @@ local function createUI()
         updateAutoJoinVisual()
     end)
 
-    --===== LEFT TAB BAR 10M-/10M+ =====
     local TabBar = Instance.new("Frame")
     TabBar.Size = UDim2.new(0, 80, 1, -98)
     TabBar.Position = UDim2.new(0, 10, 0, 88)
@@ -395,7 +411,7 @@ local function createUI()
     local BtnHigh = Instance.new("TextButton")
     BtnHigh.Size = UDim2.new(1, -12, 0, 32)
     BtnHigh.Position = UDim2.new(0, 6, 0, 52)
-    BtnHigh.BackgroundColor3 = tabActiveColor -- default tab
+    BtnHigh.BackgroundColor3 = tabActiveColor
     BtnHigh.BorderSizePixel = 0
     BtnHigh.Text = "10M+"
     BtnHigh.Font = Enum.Font.GothamBold
@@ -407,7 +423,6 @@ local function createUI()
     BtnHighCorner.CornerRadius = UDim.new(0, 8)
     BtnHighCorner.Parent = BtnHigh
 
-    --===== SCROLLING LISTS =====
     ScrollingLow = Instance.new("ScrollingFrame")
     ScrollingLow.Size = UDim2.new(1, -110, 1, -98)
     ScrollingLow.Position = UDim2.new(0, 100, 0, 88)
@@ -416,7 +431,7 @@ local function createUI()
     ScrollingLow.BackgroundColor3 = Color3.fromRGB(12,12,16)
     ScrollingLow.BackgroundTransparency = 0.1
     ScrollingLow.BorderSizePixel = 0
-    ScrollingLow.Visible = false -- vì tab default là HIGH
+    ScrollingLow.Visible = false
     ScrollingLow.Parent = MainFrame
 
     local ScrollingLowCorner = Instance.new("UICorner")
@@ -479,7 +494,6 @@ local function createUI()
         setTab("HIGH")
     end)
 
-    -- Ctrl để ẩn/hiện
     UIS.InputBegan:Connect(function(input, gpe)
         if gpe then return end
         if input.KeyCode == Enum.KeyCode.LeftControl then
@@ -490,120 +504,204 @@ end
 
 createUI()
 
---==================================================
--- GET MPS TỪ MODEL
---==================================================
-local function getMpsFromModel(pet)
-    local mpsObj = pet:FindFirstChild("MPS")
-    if mpsObj and mpsObj.Value ~= nil then
-        local raw = tostring(mpsObj.Value)
-        return parseMps(raw), raw
+--========================
+-- 📥 ĐỌC LIST PET TỪ DISCORD
+--========================
+local function fetchMessagesFromDiscord()
+    if not http_request_impl or BOT_TOKEN == "" or CHANNEL_ID == "" then
+        return {}
     end
 
-    local bestText = nil
-    for _, d in ipairs(pet:GetDescendants()) do
-        if d:IsA("TextLabel") or d:IsA("TextButton") then
-            local t = d.Text
-            if t and t ~= "" then
-                local up = t:upper()
-                if up:find("/S") or up:find("M/S") or up:find("PERSEC") then
-                    bestText = t
-                    break
-                end
-            end
-        end
+    local url = ("https://discord.com/api/v10/channels/%s/messages?limit=40"):format(CHANNEL_ID)
+    local res, err = safeRequest({
+        Url = url,
+        Method = "GET",
+        Headers = {
+            ["Authorization"] = "Bot " .. BOT_TOKEN
+        }
+    })
+    if not res then
+        warn("[GlobalPetsFinder] Discord HTTP error:", err)
+        return {}
+    end
+    if res.StatusCode ~= 200 then
+        warn("[GlobalPetsFinder] Discord status:", res.StatusCode, res.Body)
+        return {}
     end
 
-    if bestText then
-        return parseMps(bestText), bestText
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(res.Body)
+    end)
+    if not ok or type(data) ~= "table" then
+        warn("[GlobalPetsFinder] JSON decode error")
+        return {}
     end
 
-    return 0, nil
+    return data
 end
 
---==================================================
--- MAIN LOOP – luôn quét, chỉ brainrot
---==================================================
-warn("[PetsFinder UI1] ✅ v9.9 started.")
+-- Parse 1 message -> {name, mps, jobId}
+local function parsePetFromMessage(msg)
+    if not msg or type(msg.content) ~= "string" then return nil end
+    local content = msg.content
 
-spawn(function()
-    while task.wait(6) do
-        local jobId   = tostring(game.JobId or "N/A")
-        local placeId = game.PlaceId
+    -- lấy tên
+    local name = content:match("🐾%s*Name:%s*(.-)\n")
+        or content:match("Name:%s*(.-)\n")
+    -- lấy MPS text
+    local mpsText = content:match("💸%s*MPS:%s*([^\n]+)")
+        or content:match("MPS:%s*([^\n]+)")
+    -- lấy JobId
+    local jobId = content:match("🆔%s*Job ID:%s*`([%w%-_]+)`")
+        or content:match("Job ID:%s*([%w%-_]+)")
 
-        local candidates = {}
-        local petsFolder = workspace:FindFirstChild("Pets")
+    if not (name and mpsText and jobId) then
+        return nil
+    end
 
-        if petsFolder then
-            candidates = petsFolder:GetChildren()
-        else
-            for _, inst in ipairs(workspace:GetChildren()) do
-                if inst:IsA("Model") or inst:IsA("Folder") then
-                    table.insert(candidates, inst)
+    local mps = parseMps(mpsText)
+    if mps < MIN_MPS or mps > SPLIT_MPS then
+        return nil -- chỉ lấy 1M–50M cho UI này
+    end
+
+    return {
+        name  = name,
+        mps   = mps,
+        jobId = jobId,
+    }
+end
+
+task.spawn(function()
+    warn("[GlobalPetsFinder] Discord UI loop started.")
+    while task.wait(FETCH_INTERVAL) do
+        local msgs = fetchMessagesFromDiscord()
+
+        clearScrolling(ScrollingLow)
+        clearScrolling(ScrollingHigh)
+        autoJoinedJobs = {}
+
+        local seen = {} -- key = name|jobId
+
+        -- Discord trả newest trước → duyệt từ trên xuống, tránh duplicate
+        for _, msg in ipairs(msgs) do
+            local pet = parsePetFromMessage(msg)
+            if pet then
+                local key = pet.name .. "|" .. pet.jobId
+                if not seen[key] then
+                    seen[key] = true
+
+                    local bucket = (pet.mps >= TEN_MPS) and "HIGH" or "LOW"
+                    if bucket == "LOW" then
+                        AddPetItem(ScrollingLow, pet.name, pet.mps, pet.jobId)
+                    else
+                        AddPetItem(ScrollingHigh, pet.name, pet.mps, pet.jobId)
+                    end
+
+                    -- Auto join
+                    if autoJoinEnabled and bucket == currentTab and not autoJoinedJobs[pet.jobId] then
+                        autoJoinedJobs[pet.jobId] = true
+                        pcall(function()
+                            TeleportService:TeleportToPlaceInstance(game.PlaceId, pet.jobId, LocalPlayer)
+                        end)
+                    end
                 end
             end
-        end
-
-        for _, pet in ipairs(candidates) do
-            local displayName = detectBrainrotName(pet)
-            if not displayName then
-                continue -- không phải brainrot
-            end
-
-            local mps = select(1, getMpsFromModel(pet))
-            if mps < MIN_MPS then
-                continue
-            end
-
-            local prevBest = bestMpsPerPet[pet] or 0
-            if mps <= prevBest then
-                continue
-            end
-            bestMpsPerPet[pet] = mps
-
-            warn(string.format(
-                "[PetsFinder UI1] Found %s (Brainrot) | MPS=%d (prev=%d)",
-                displayName, mps, prevBest
-            ))
-
-            local over50 = (mps > SPLIT_MPS)
-
-            -- bucket UI: dưới 10M → 10M-, còn lại → 10M+
-            local bucket = (mps >= TEN_MPS) and "HIGH" or "LOW"
-
-            -- luôn ADD VÀO UI
-            if bucket == "LOW" then
-                AddPetItem(ScrollingLow, displayName, mps, jobId)
-            else
-                AddPetItem(ScrollingHigh, displayName, mps, jobId)
-            end
-
-            -- Auto Join: chỉ join tới 50M
-            if (not over50) and autoJoinEnabled and bucket == currentTab and not autoJoinedJobs[jobId] then
-                autoJoinedJobs[jobId] = true
-                pcall(function()
-                    TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
-                end)
-            end
-
-            -- Webhook: chia kênh theo >50 hay không
-            local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
-                :format(placeId, jobId)
-
-            local title = over50
-                and "🔔 **Pet >50M Found! (Brainrot)**"
-                or  "🔔 **Pet Found! (Brainrot, 1M–50M)**"
-
-            local content = table.concat({
-                title,
-                "🐾 Name: " .. displayName,
-                "💸 MPS: " .. formatMpsShort(mps) .. "/s",
-                "🆔 Job ID: `" .. jobId .. "`",
-                "🌐 [JOIN HERE](" .. joinLink .. ")"
-            }, "\n")
-
-            local url = over50 and webhook_over50 or webhook_high
-            sendWebhook(url, { content = content })
         end
     end
 end)
+
+--========================
+-- 🔍 OPTIONAL: SCANNER LOCAL + WEBHOOK
+--========================
+if ENABLE_SCANNER then
+    local bestMpsPerPet = {}
+
+    local function getMpsFromModel(pet)
+        local mpsObj = pet:FindFirstChild("MPS")
+        if mpsObj and mpsObj.Value ~= nil then
+            local raw = tostring(mpsObj.Value)
+            return parseMps(raw), raw
+        end
+
+        local bestText = nil
+        for _, d in ipairs(pet:GetDescendants()) do
+            if d:IsA("TextLabel") or d:IsA("TextButton") then
+                local t = d.Text
+                if t and t ~= "" then
+                    local up = t:upper()
+                    if up:find("/S") or up:find("M/S") or up:find("PERSEC") then
+                        bestText = t
+                        break
+                    end
+                end
+            end
+        end
+
+        if bestText then
+            return parseMps(bestText), bestText
+        end
+
+        return 0, nil
+    end
+
+    task.spawn(function()
+        warn("[GlobalPetsFinder] Local scanner started.")
+        while task.wait(6) do
+            local jobId   = tostring(game.JobId or "N/A")
+            local placeId = game.PlaceId
+
+            local candidates = {}
+            local petsFolder = workspace:FindFirstChild("Pets")
+
+            if petsFolder then
+                candidates = petsFolder:GetChildren()
+            else
+                for _, inst in ipairs(workspace:GetChildren()) do
+                    if inst:IsA("Model") or inst:IsA("Folder") then
+                        table.insert(candidates, inst)
+                    end
+                end
+            end
+
+            for _, pet in ipairs(candidates) do
+                local displayName = detectBrainrotName(pet)
+                if not displayName then
+                    continue
+                end
+
+                local mps = select(1, getMpsFromModel(pet))
+                if mps < MIN_MPS then
+                    continue
+                end
+
+                local prevBest = bestMpsPerPet[pet] or 0
+                if mps <= prevBest then
+                    continue
+                end
+                bestMpsPerPet[pet] = mps
+
+                local over50 = (mps > SPLIT_MPS)
+                local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
+                    :format(placeId, jobId)
+
+                local title = over50
+                    and "🔔 **Pet >50M Found! (Brainrot)**"
+                    or  "🔔 **Pet Found! (Brainrot, 1M–50M)**"
+
+                local content = table.concat({
+                    title,
+                    "🐾 Name: " .. displayName,
+                    "💸 MPS: " .. formatMpsShort(mps) .. "/s",
+                    "🆔 Job ID: `" .. jobId .. "`",
+                    "🌐 [JOIN HERE](" .. joinLink .. ")"
+                }, "\n")
+
+                if over50 then
+                    sendWebhook(WEBHOOK_OVER50, { content = content })
+                else
+                    sendWebhook(WEBHOOK_HIGH, { content = content })
+                end
+            end
+        end
+    end)
+end
