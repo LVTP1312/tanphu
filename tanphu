@@ -1,22 +1,22 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER UI 1 (v9.8)
+-- ⏳ TANPHU PETS FINDER UI 1 (v9.9)
 --   • CHỈ brainrot trong targets
 --   • 1M–50M  → UI + Auto Join + webhook_high
---   • >50M    → CHỈ webhook_over50 (không UI, không Auto Join)
+--   • >50M    → VẪN LÊN UI (tab 10M+), KHÔNG Auto Join, webhook_over50
 --   • Menu: tab bên trái 10M- / 10M+
 --       - 10M- : 1M ≤ MPS < 10M
---       - 10M+ : 10M ≤ MPS ≤ 50M
---   • Auto Join chỉ join theo tab đang chọn
+--       - 10M+ : MPS ≥ 10M (kể cả >50M)
+--   • Auto Join chỉ join theo tab đang chọn & chỉ join tới 50M
 --   • Ctrl (LeftControl) ẩn/hiện menu
 --   • ⏱ LOOP = 6s  → chậm hơn UI 2 (3s) đúng 3 giây
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_UI1_v9_8_Loaded then
+if _G.TanPhuPetsFinder_UI1_v9_9_Loaded then
     warn("[PetsFinder UI1] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_UI1_v9_8_Loaded = true
+_G.TanPhuPetsFinder_UI1_v9_9_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -150,7 +150,7 @@ end
 --==================================================
 local MIN_MPS       = 1_000_000      -- brainrot ≥1M mới báo
 local TEN_MPS       = 10_000_000     -- ngưỡng 10M chia tab
-local SPLIT_MPS     = 50_000_000     -- chia webhook 50M
+local SPLIT_MPS     = 50_000_000     -- >50M vào webhook_over50
 
 local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
@@ -160,16 +160,17 @@ local bestMpsPerPet = {}
 
 --==================================================
 -- UI + AUTO JOIN
---  • Tab bên trái: 10M- / 10M+
 --==================================================
 local autoJoinEnabled = false
 local autoJoinedJobs  = {}
-local currentTab      = "HIGH"   -- "LOW" (1–10M) hoặc "HIGH" (10–50M)
+local currentTab      = "HIGH"   -- "LOW" hoặc "HIGH"
 
 local ScreenGui, MainFrame
 local ScrollingLow, ScrollingHigh
 
 local function AddPetItem(scrolling, petName, mps, jobId)
+    if not scrolling then return end  -- phòng trường hợp nil
+
     local Item = Instance.new("Frame")
     Item.Name = "PetItem"
     Item.Size = UDim2.new(1, -8, 0, 42)
@@ -268,7 +269,7 @@ local function createUI()
     Title.Size = UDim2.new(1, -20, 1, 0)
     Title.Position = UDim2.new(0, 10, 0, 0)
     Title.BackgroundTransparency = 1
-    Title.Text = "TanPhu freehub | Pets Finder (1M–50M)"
+    Title.Text = "TanPhu freehub | Pets Finder (1M–50M+)"
     Title.TextColor3 = Color3.fromRGB(0, 255, 255)
     Title.Font = Enum.Font.GothamBold
     Title.TextSize = 18
@@ -522,12 +523,11 @@ end
 
 --==================================================
 -- MAIN LOOP – luôn quét, chỉ brainrot
---  🔁 W=6s → thua UI 2 (W=3s) đúng 3 giây
 --==================================================
-warn("[PetsFinder UI1] ✅ v9.8 started.")
+warn("[PetsFinder UI1] ✅ v9.9 started.")
 
 spawn(function()
-    while task.wait(6) do  -- ⬅️ CHỈNH 3 → 6 để chậm hơn 3s
+    while task.wait(6) do
         local jobId   = tostring(game.JobId or "N/A")
         local placeId = game.PlaceId
 
@@ -566,14 +566,27 @@ spawn(function()
                 displayName, mps, prevBest
             ))
 
-            local over50   = (mps > SPLIT_MPS)
-            local bucket   -- "LOW" (1–10M) hay "HIGH" (10–50M)
-            if mps >= TEN_MPS and mps <= SPLIT_MPS then
-                bucket = "HIGH"
-            elseif mps >= MIN_MPS and mps < TEN_MPS then
-                bucket = "LOW"
+            local over50 = (mps > SPLIT_MPS)
+
+            -- bucket UI: dưới 10M → 10M-, còn lại → 10M+
+            local bucket = (mps >= TEN_MPS) and "HIGH" or "LOW"
+
+            -- luôn ADD VÀO UI
+            if bucket == "LOW" then
+                AddPetItem(ScrollingLow, displayName, mps, jobId)
+            else
+                AddPetItem(ScrollingHigh, displayName, mps, jobId)
             end
 
+            -- Auto Join: chỉ join tới 50M
+            if (not over50) and autoJoinEnabled and bucket == currentTab and not autoJoinedJobs[jobId] then
+                autoJoinedJobs[jobId] = true
+                pcall(function()
+                    TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
+                end)
+            end
+
+            -- Webhook: chia kênh theo >50 hay không
             local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
                 :format(placeId, jobId)
 
@@ -589,26 +602,8 @@ spawn(function()
                 "🌐 [JOIN HERE](" .. joinLink .. ")"
             }, "\n")
 
-            if over50 then
-                -- >50M: chỉ webhook VIP
-                sendWebhook(webhook_over50, { content = content })
-            else
-                -- 1M–50M: UI + Auto Join + webhook_high
-                if bucket == "LOW" then
-                    AddPetItem(ScrollingLow, displayName, mps, jobId)
-                elseif bucket == "HIGH" then
-                    AddPetItem(ScrollingHigh, displayName, mps, jobId)
-                end
-
-                if autoJoinEnabled and bucket == currentTab and not autoJoinedJobs[jobId] then
-                    autoJoinedJobs[jobId] = true
-                    pcall(function()
-                        TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
-                    end)
-                end
-
-                sendWebhook(webhook_high, { content = content })
-            end
+            local url = over50 and webhook_over50 or webhook_high
+            sendWebhook(url, { content = content })
         end
     end
 end)
