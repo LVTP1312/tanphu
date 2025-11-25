@@ -2,7 +2,7 @@
 -- TANPHU GLOBAL PETS FINDER (UI + DISCORD)
 --  • UI 10M- / 10M+ dùng chung cho mọi người
 --  • Đọc list từ Discord channel bằng BOT TOKEN
---  • (Optional) Scanner local + gửi webhook
+--  • Scanner local + gửi webhook (ENABLE_SCANNER)
 --==================================================
 
 repeat task.wait() until game:IsLoaded()
@@ -16,14 +16,14 @@ _G.TanPhu_GlobalPetsFinder_Loaded = true
 --========================
 -- 🔧 CONFIG
 --========================
-local BOT_TOKEN      = "MTQ0Mjg4NjkxOTAyODQ3Mzk3OA.GoAlxT.jZhdgqb7J-bzk32vQMK0aIkidGakByvOw64p8k"
+local BOT_TOKEN      = "MTQ0Mjg4NjkxOTAyODQ3Mzk3OA.G_rKmh.o2huGw3q0_mGHatoG7aqZOWBf0ZObnbcewZBUk"
 local CHANNEL_ID     = "1411328401096179713"
-local ENABLE_SCANNER = true          -- bật/tắt scanner local + webhook
+local ENABLE_SCANNER = true          -- true = client này scan & gửi webhook, false = chỉ đọc Discord
 local FETCH_INTERVAL = 6             -- giây, chu kỳ đọc Discord
 
--- Webhook để scanner local gửi (nếu ENABLE_SCANNER = true)
-local WEBHOOK_HIGH   = "https://discordapp.com/api/webhooks/xxxxxxxxxxxxxxxxxxxx"  -- 1M–50M
-local WEBHOOK_OVER50 = "https://discordapp.com/api/webhooks/xxxxxxxxxxxxxxxxxxxx"  -- >50M (nếu cần)
+-- Webhook để scanner local gửi
+local WEBHOOK_HIGH   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK" -- 1M–50M
+local WEBHOOK_OVER50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb" -- >50M
 
 --========================
 -- SERVICES
@@ -70,7 +70,7 @@ local function sendWebhook(url, payload)
     if not res then
         warn("[GlobalPetsFinder] Webhook error:", err)
     elseif res.StatusCode and res.StatusCode >= 300 then
-        warn("[GlobalPetsFinder] Webhook HTTP", res.StatusCode)
+        warn("[GlobalPetsFinder] Webhook HTTP", res.StatusCode, res.Body or "")
     end
 end
 
@@ -525,7 +525,7 @@ local function fetchMessagesFromDiscord()
         return {}
     end
     if res.StatusCode ~= 200 then
-        warn("[GlobalPetsFinder] Discord status:", res.StatusCode, res.Body)
+        warn("[GlobalPetsFinder] Discord Status:", res.StatusCode, res.Body or "")
         return {}
     end
 
@@ -553,7 +553,7 @@ local function parsePetFromMessage(msg)
         or content:match("MPS:%s*([^\n]+)")
     -- lấy JobId
     local jobId = content:match("🆔%s*Job ID:%s*`([%w%-_]+)`")
-        or content:match("Job ID:%s*([%w%-_]+)")
+        or content:match("Job ID:%s*`?([%w%-_]+)`?")
 
     if not (name and mpsText and jobId) then
         return nil
@@ -582,7 +582,7 @@ task.spawn(function()
 
         local seen = {} -- key = name|jobId
 
-        -- Discord trả newest trước → duyệt từ trên xuống, tránh duplicate
+        -- Discord trả newest trước → duyệt từ trên xuống
         for _, msg in ipairs(msgs) do
             local pet = parsePetFromMessage(msg)
             if pet then
