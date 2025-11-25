@@ -1,18 +1,17 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER v9.4
---   • Quét liên tục, người join sau vẫn bị quét
---   • Chỉ brainrot trong targets
---   • MPS từ 1M trở lên mới tính
+-- ⏳ TANPHU PETS FINDER v9.5
+--   • Brainrot trong targets + mọi pet khác MPS ≥ 1M
 --   • 1M–50M  → UI + Auto Join + webhook_high
 --   • >50M    → CHỈ webhook_over50 (không UI, không Auto Join)
+--   • Quét liên tục, người join sau vẫn bị quét
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v9_4_Loaded then
+if _G.TanPhuPetsFinder_v9_5_Loaded then
     warn("[PetsFinder] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v9_4_Loaded = true
+_G.TanPhuPetsFinder_v9_5_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -46,7 +45,7 @@ local function sendWebhook(url, payload)
 end
 
 --==================================================
--- 🎯 TARGET LIST
+-- 🎯 TARGET LIST (brainrot)
 --==================================================
 local targets = {
     'Chipso and Queso','La Casa Boo','Tang Tang Keletang','Headless Horseman',
@@ -69,7 +68,8 @@ for _, t in ipairs(targets) do
     table.insert(targetsLower, string.lower(t))
 end
 
-local function detectTargetFromModel(model)
+-- Trả về tên brainrot nếu model chứa 1 trong các tên targets
+local function detectBrainrotName(model)
     if not model then return nil end
 
     local nameLower = string.lower(model.Name or "")
@@ -94,6 +94,27 @@ local function detectTargetFromModel(model)
     end
 
     return nil
+end
+
+-- Tên “generic” cho pet không nằm trong targets (lấy text đẹp nhất)
+local function getAnyDisplayName(model)
+    if not model then return "Unknown" end
+
+    -- ưu tiên TextLabel/TextButton có chữ cái, ngắn gọn
+    for _, d in ipairs(model:GetDescendants()) do
+        if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text and d.Text ~= "" then
+            local t = tostring(d.Text)
+            if #t <= 40 and t:match("%a") then
+                return t
+            end
+        end
+    end
+
+    local n = tostring(model.Name or "Unknown")
+    if #n > 40 then
+        n = n:sub(1, 37) .. "..."
+    end
+    return n
 end
 
 --==================================================
@@ -135,8 +156,8 @@ end
 --==================================================
 -- NGƯỠNG & WEBHOOK
 --==================================================
-local MIN_TARGET_MPS = 1_000_000      -- ⬅️ chỉnh 1M
-local SPLIT_MPS      = 50_000_000     -- chia 50M
+local MIN_MPS       = 1_000_000      -- cả brainrot & other đều ≥1M mới báo
+local SPLIT_MPS     = 50_000_000
 
 local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
@@ -145,7 +166,7 @@ local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/
 local bestMpsPerPet = {}
 
 --==================================================
--- UI + AUTO JOIN (chỉ cho ≤50M)
+-- UI + AUTO JOIN (1M–50M)
 --==================================================
 local autoJoinEnabled = false
 local autoJoinedJobs  = {}
@@ -292,10 +313,10 @@ end
 
 local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
 
-local function AddPetItem(petName, mps, jobId)
+local function AddPetItem(petName, mps, jobId, isBrainrot)
     local Item = Instance.new("Frame")
     Item.Size = UDim2.new(1, -8, 0, 42)
-    Item.BackgroundColor3 = Color3.fromRGB(32,40,55)
+    Item.BackgroundColor3 = isBrainrot and Color3.fromRGB(32,40,55) or Color3.fromRGB(30,35,45)
     Item.BorderSizePixel = 0
     Item.Parent = Scrolling
 
@@ -305,7 +326,7 @@ local function AddPetItem(petName, mps, jobId)
 
     local ItemStroke = Instance.new("UIStroke")
     ItemStroke.Thickness = 1
-    ItemStroke.Color = Color3.fromRGB(0,200,255)
+    ItemStroke.Color = isBrainrot and Color3.fromRGB(0,200,255) or Color3.fromRGB(120,200,120)
     ItemStroke.Transparency = 0.15
     ItemStroke.Parent = Item
 
@@ -384,7 +405,7 @@ end
 --==================================================
 -- MAIN LOOP – luôn quét, kể cả người join sau
 --==================================================
-warn("[PetsFinder] ✅ v9.4 started.")
+warn("[PetsFinder] ✅ v9.5 started.")
 
 spawn(function()
     while task.wait(3) do
@@ -405,13 +426,12 @@ spawn(function()
         end
 
         for _, pet in ipairs(candidates) do
-            local displayName = detectTargetFromModel(pet)
-            if not displayName then
-                continue
-            end
+            local brainrotName = detectBrainrotName(pet)
+            local isBrainrot   = brainrotName ~= nil
+            local displayName  = brainrotName or getAnyDisplayName(pet)
 
             local mps = select(1, getMpsFromModel(pet))
-            if mps < MIN_TARGET_MPS then
+            if mps < MIN_MPS then
                 continue
             end
 
@@ -421,14 +441,29 @@ spawn(function()
             end
             bestMpsPerPet[pet] = mps
 
-            warn(string.format("[PetsFinder] Found %s | MPS=%d (prev=%d)", displayName, mps, prevBest))
+            warn(string.format(
+                "[PetsFinder] Found %s (%s) | MPS=%d (prev=%d)",
+                displayName,
+                isBrainrot and "Brainrot" or "Other",
+                mps,
+                prevBest
+            ))
 
             local over50   = (mps > SPLIT_MPS)
             local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
                 :format(placeId, jobId)
 
+            local title
+            if isBrainrot then
+                title = over50 and "🔔 **Pet >50M Found! (Brainrot)**"
+                               or  "🔔 **Pet Found! (Brainrot, 1M–50M)**"
+            else
+                title = over50 and "🔔 **Pet >50M Found! (Other)**"
+                               or  "🔔 **Pet Found! (Other, 1M–50M)**"
+            end
+
             local content = table.concat({
-                over50 and "🔔 **Pet >50M Found! (Brainrot)**" or "🔔 **Pet Found! (Brainrot, 1M–50M)**",
+                title,
                 "🐾 Name: " .. displayName,
                 "💸 MPS: " .. formatMpsShort(mps) .. "/s",
                 "🆔 Job ID: `" .. jobId .. "`",
@@ -439,8 +474,8 @@ spawn(function()
                 -- >50M: chỉ webhook
                 sendWebhook(webhook_over50, { content = content })
             else
-                -- 1M–50M: UI + Auto Join + webhook_high
-                AddPetItem(displayName, mps, jobId)
+                -- 1M–50M: UI + Auto Join + webhook_high (cả brainrot & other)
+                AddPetItem(displayName, mps, jobId, isBrainrot)
 
                 if autoJoinEnabled and not autoJoinedJobs[jobId] then
                     autoJoinedJobs[jobId] = true
