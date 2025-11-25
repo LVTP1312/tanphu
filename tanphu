@@ -1,19 +1,13 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER v9.2 – PER-PET NOTIFY
---   • Chỉ brainrot trong targets
---   • Mỗi con pet (Instance) riêng biệt
---   • MPS >= 2M mới tính
---   • 2M–50M  → webhook_high (+ Auto Join)
---   • >50M    → webhook_over50 (không Auto Join)
---   • Nếu MPS của đúng con đó tăng → notify lại
+-- ⏳ TANPHU PETS FINDER v9.3 – UI CHỈ HIỆN ≤50M
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v9_2_Loaded then
+if _G.TanPhuPetsFinder_v9_3_Loaded then
     warn("[PetsFinder] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v9_2_Loaded = true
+_G.TanPhuPetsFinder_v9_3_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -70,7 +64,6 @@ for _, t in ipairs(targets) do
     table.insert(targetsLower, string.lower(t))
 end
 
--- Tìm tên brainrot từ model (Name + mọi TextLabel/TextButton)
 local function detectTargetFromModel(model)
     if not model then return nil end
 
@@ -143,8 +136,8 @@ local SPLIT_MPS      = 50_000_000
 local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
--- ✅ Mỗi pet (Instance) 1 best MPS riêng
-local bestMpsPerPet = {}  -- key = pet Instance, value = best MPS đã báo
+-- mỗi pet (Instance) 1 best MPS riêng
+local bestMpsPerPet = {}
 
 --==================================================
 -- UI + AUTO JOIN
@@ -384,9 +377,9 @@ local function getMpsFromModel(pet)
 end
 
 --==================================================
--- MAIN LOOP
+-- MAIN LOOP – UI chỉ nhận ≤50M
 --==================================================
-warn("[PetsFinder] ✅ v9.2 started.")
+warn("[PetsFinder] ✅ v9.3 started.")
 
 spawn(function()
     while task.wait(3) do
@@ -417,10 +410,9 @@ spawn(function()
                 continue
             end
 
-            -- key theo chính pet Instance
             local prevBest = bestMpsPerPet[pet] or 0
             if mps <= prevBest then
-                continue -- MPS không tăng → khỏi spam
+                continue
             end
             bestMpsPerPet[pet] = mps
 
@@ -429,8 +421,6 @@ spawn(function()
             local over50   = (mps > SPLIT_MPS)
             local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
                 :format(placeId, jobId)
-
-            AddPetItem(displayName, mps, jobId, over50)
 
             local content = table.concat({
                 over50 and "🔔 **Pet >50M Found! (Brainrot)**" or "🔔 **Pet Found! (Brainrot, ≤50M)**",
@@ -441,15 +431,19 @@ spawn(function()
             }, "\n")
 
             if over50 then
+                -- >50M: CHỈ WEBHOOK, KHÔNG UI, KHÔNG AUTO JOIN
                 sendWebhook(webhook_over50, { content = content })
             else
-                -- Auto join khi có brainrot ≤50M mới
+                -- ≤50M: UI + WEBHOOK + AUTO JOIN
+                AddPetItem(displayName, mps, jobId, false)
+
                 if autoJoinEnabled and not autoJoinedJobs[jobId] then
                     autoJoinedJobs[jobId] = true
                     pcall(function()
                         TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
                     end)
                 end
+
                 sendWebhook(webhook_high, { content = content })
             end
         end
