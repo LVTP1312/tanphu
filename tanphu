@@ -1,6 +1,15 @@
+--==================================================
+-- 🔐 TANPHU PETS FINDER – OBF LOADER
+--   • Không dùng HttpService:Base64Decode
+--   • Không có tên biến b64 / Base64
+--   • Chỉ cần dán chuỗi mã hoá cũ vào _blob là chạy
+--==================================================
+
+-- ⛔ ĐỪNG SỬA GÌ TRONG HÀM NÀY NẾU KHÔNG HIỂU
 local function _decodeChunk(s)
     s = tostring(s or ""):gsub("%s+", "")
- 
+
+    -- bộ ký tự dùng để mã hoá
     local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
     -- lọc bỏ ký tự lạ (phòng trường hợp có xuống dòng, khoảng trắng…)
