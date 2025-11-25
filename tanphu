@@ -1,20 +1,22 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER – UI 50M (v10)
+-- ⏳ TANPHU PETS FINDER UI 1 (v9.8)
 --   • CHỈ brainrot trong targets
---   • UI duy nhất: 10M+ với 2 tab: 50M- (10–50M) & 50M+ (>=50M)
---   • Auto Join: chỉ join mấy con >=50M khi bật "Auto 50M+ ON"
---   • Webhook1: 10M–50M
---   • Webhook2: >=50M
---   • Ctrl (LeftControl) ẩn/hiện UI
---   • Loop quét mỗi ~3s (script UI1 của bạn chỉ cần để loop chậm hơn 3s là “thua 3s”)
+--   • 1M–50M  → UI + Auto Join + webhook_high
+--   • >50M    → CHỈ webhook_over50 (không UI, không Auto Join)
+--   • Menu: tab bên trái 10M- / 10M+
+--       - 10M- : 1M ≤ MPS < 10M
+--       - 10M+ : 10M ≤ MPS ≤ 50M
+--   • Auto Join chỉ join theo tab đang chọn
+--   • Ctrl (LeftControl) ẩn/hiện menu
+--   • ⏱ LOOP = 6s  → chậm hơn UI 2 (3s) đúng 3 giây
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_50M_v10_Loaded then
-    warn("[PetsFinder50M] Script đã chạy, không chạy lại.")
+if _G.TanPhuPetsFinder_UI1_v9_8_Loaded then
+    warn("[PetsFinder UI1] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_50M_v10_Loaded = true
+_G.TanPhuPetsFinder_UI1_v9_8_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -22,7 +24,7 @@ local TeleportService = game:GetService("TeleportService")
 local UIS             = game:GetService("UserInputService")
 local LocalPlayer     = Players.LocalPlayer
 
--- chọn HTTP
+-- HTTP impl
 local http_request_impl =
     (typeof(syn) == "table" and typeof(syn.request) == "function" and syn.request)
     or (typeof(http_request) == "function" and http_request)
@@ -30,7 +32,7 @@ local http_request_impl =
     or (typeof(http) == "table" and typeof(http.request) == "function" and http.request)
 
 if not http_request_impl then
-    warn("[PetsFinder50M] ❌ Không tìm thấy HTTP request (syn/request/http).")
+    warn("[PetsFinder UI1] ❌ Không tìm thấy HTTP request.")
     return
 end
 
@@ -44,7 +46,7 @@ local function sendWebhook(url, payload)
         })
     end)
     if not ok then
-        warn("[PetsFinder50M] HTTP error:", err)
+        warn("[PetsFinder UI1] HTTP error:", err)
     end
 end
 
@@ -72,10 +74,11 @@ for _, t in ipairs(targets) do
     table.insert(targetsLower, string.lower(t))
 end
 
+-- Trả về tên brainrot nếu model chứa 1 trong các tên targets
 local function detectBrainrotName(model)
     if not model then return nil end
 
-    -- Tên model
+    -- check tên model
     local nameLower = string.lower(model.Name or "")
     for i, tLower in ipairs(targetsLower) do
         if string.find(nameLower, tLower, 1, true) then
@@ -83,7 +86,7 @@ local function detectBrainrotName(model)
         end
     end
 
-    -- Tên trong TextLabel/TextButton
+    -- check TextLabel/TextButton con
     for _, d in ipairs(model:GetDescendants()) do
         if d:IsA("TextLabel") or d:IsA("TextButton") then
             local txt = d.Text
@@ -140,31 +143,32 @@ end
 --==================================================
 -- NGƯỠNG & WEBHOOK
 --==================================================
-local TEN_MPS       = 10_000_000     -- 10M – UI này chỉ nhận >=10M
-local SPLIT_MPS     = 50_000_000     -- 50M – tách 50M-/50M+
-local MIN_MPS       = TEN_MPS        -- min cho script 50M
+local MIN_MPS       = 1_000_000      -- brainrot ≥1M mới báo
+local TEN_MPS       = 10_000_000     -- ngưỡng 10M chia tab
+local SPLIT_MPS     = 50_000_000     -- chia webhook 50M
 
-local webhook_10to50 = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
+local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
 
-local bestMpsPerPet  = {}
-local joinedJobs     = {}   -- tránh teleport trùng JobId
+-- mỗi pet (Instance) 1 best MPS riêng, để không spam lại nếu MPS không tăng
+local bestMpsPerPet = {}
 
 --==================================================
--- UI 50M-/50M+
+-- UI + AUTO JOIN
+--  • Tab bên trái: 10M- / 10M+
 --==================================================
-local autoJoin50Enabled = false   -- chỉ join 50M+ khi ON
-local currentTab50      = "HIGH"  -- "LOW" (50M-) / "HIGH" (50M+)
+local autoJoinEnabled = false
+local autoJoinedJobs  = {}
+local currentTab      = "HIGH"   -- "LOW" (1–10M) hoặc "HIGH" (10–50M)
 
-local ScreenGui
-local MainFrame50
-local ScrollingLow50, ScrollingHigh50
+local ScreenGui, MainFrame
+local ScrollingLow, ScrollingHigh
 
-local function AddPetItem(scrolling, petName, mps, jobId, highlight)
+local function AddPetItem(scrolling, petName, mps, jobId)
     local Item = Instance.new("Frame")
     Item.Name = "PetItem"
     Item.Size = UDim2.new(1, -8, 0, 42)
-    Item.BackgroundColor3 = highlight and Color3.fromRGB(45,35,55) or Color3.fromRGB(32,40,55)
+    Item.BackgroundColor3 = Color3.fromRGB(32,40,55)
     Item.BorderSizePixel = 0
     Item.Parent = scrolling
 
@@ -174,7 +178,7 @@ local function AddPetItem(scrolling, petName, mps, jobId, highlight)
 
     local ItemStroke = Instance.new("UIStroke")
     ItemStroke.Thickness = 1
-    ItemStroke.Color = highlight and Color3.fromRGB(255,215,0) or Color3.fromRGB(0,200,255)
+    ItemStroke.Color = Color3.fromRGB(0,200,255)
     ItemStroke.Transparency = 0.15
     ItemStroke.Parent = Item
 
@@ -202,7 +206,7 @@ local function AddPetItem(scrolling, petName, mps, jobId, highlight)
     local Join = Instance.new("TextButton")
     Join.Size = UDim2.new(0.2, -10, 0, 30)
     Join.Position = UDim2.new(0.8, 0, 0.5, -15)
-    Join.BackgroundColor3 = highlight and Color3.fromRGB(255,120,0) or Color3.fromRGB(0,140,255)
+    Join.BackgroundColor3 = Color3.fromRGB(0,140,255)
     Join.Text = "Join"
     Join.TextColor3 = Color3.fromRGB(255,255,255)
     Join.Font = Enum.Font.GothamBold
@@ -221,53 +225,57 @@ end
 
 local function createUI()
     ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "TanPhuPetsFinder_50M"
+    ScreenGui.Name = "TanPhuPetsFinder_UI1"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
-    MainFrame50 = Instance.new("Frame")
-    MainFrame50.Size = UDim2.new(0, 420, 0, 300)
-    MainFrame50.Position = UDim2.new(0.5, -210, 0.5, -150)
-    MainFrame50.BackgroundColor3 = Color3.fromRGB(16,14,20)
-    MainFrame50.BorderSizePixel = 0
-    MainFrame50.Active = true
-    MainFrame50.Draggable = true
-    MainFrame50.Parent = ScreenGui
+    -- ===== MAIN FRAME =====
+    MainFrame = Instance.new("Frame")
+    MainFrame.Size = UDim2.new(0, 450, 0, 380)
+    MainFrame.Position = UDim2.new(0.5, -225, 0.5, -190)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(15,15,18)
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Active = true
+    MainFrame.Draggable = true
+    MainFrame.Parent = ScreenGui
 
-    local Frame50Corner = Instance.new("UICorner")
-    Frame50Corner.CornerRadius = UDim.new(0, 10)
-    Frame50Corner.Parent = MainFrame50
+    local FrameCorner = Instance.new("UICorner")
+    FrameCorner.CornerRadius = UDim.new(0, 10)
+    FrameCorner.Parent = MainFrame
 
-    local Frame50Stroke = Instance.new("UIStroke")
-    Frame50Stroke.Thickness = 1.4
-    Frame50Stroke.Color = Color3.fromRGB(255, 190, 0)
-    Frame50Stroke.Transparency = 0.3
-    Frame50Stroke.Parent = MainFrame50
+    local FrameStroke = Instance.new("UIStroke")
+    FrameStroke.Thickness = 1.5
+    FrameStroke.Color = Color3.fromRGB(0, 180, 255)
+    FrameStroke.Transparency = 0.4
+    FrameStroke.Parent = MainFrame
 
-    local TitleBar50 = Instance.new("Frame")
-    TitleBar50.Size = UDim2.new(1, 0, 0, 40)
-    TitleBar50.BackgroundColor3 = Color3.fromRGB(22,18,28)
-    TitleBar50.BorderSizePixel = 0
-    TitleBar50.Parent = MainFrame50
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Size = UDim2.new(1, 0, 0, 42)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(20,20,26)
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = MainFrame
 
-    local Title50 = Instance.new("TextLabel")
-    Title50.Size = UDim2.new(1, -20, 1, 0)
-    Title50.Position = UDim2.new(0, 10, 0, 0)
-    Title50.BackgroundTransparency = 1
-    Title50.Text = "TanPhu | Pets Finder 10M+ (50M-/50M+)"
-    Title50.Font = Enum.Font.GothamBold
-    Title50.TextSize = 16
-    Title50.TextColor3 = Color3.fromRGB(255, 220, 120)
-    Title50.TextXAlignment = Enum.TextXAlignment.Left
-    Title50.Parent = TitleBar50
+    local TitleCorner = Instance.new("UICorner")
+    TitleCorner.CornerRadius = UDim.new(0, 10)
+    TitleCorner.Parent = TitleBar
 
-    local Title50Gradient = Instance.new("UIGradient")
-    Title50Gradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 200, 80)),
-        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 230, 150)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 150, 60)),
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, -20, 1, 0)
+    Title.Position = UDim2.new(0, 10, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "TanPhu freehub | Pets Finder (1M–50M)"
+    Title.TextColor3 = Color3.fromRGB(0, 255, 255)
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 18
+    Title.Parent = TitleBar
+
+    local TitleGradient = Instance.new("UIGradient")
+    TitleGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 255, 200)),
+        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 180, 255)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 0, 255)),
     })
-    Title50Gradient.Parent = Title50
+    TitleGradient.Parent = Title
 
     local CtrlHint = Instance.new("TextLabel")
     CtrlHint.Size = UDim2.new(0, 80, 0, 16)
@@ -276,177 +284,200 @@ local function createUI()
     CtrlHint.Text = "[Ctrl] Hide"
     CtrlHint.Font = Enum.Font.Gotham
     CtrlHint.TextSize = 11
-    CtrlHint.TextColor3 = Color3.fromRGB(180,180,190)
+    CtrlHint.TextColor3 = Color3.fromRGB(150,150,160)
     CtrlHint.TextXAlignment = Enum.TextXAlignment.Right
-    CtrlHint.Parent = TitleBar50
+    CtrlHint.Parent = TitleBar
 
-    local AutoJoin50Button = Instance.new("TextButton")
-    AutoJoin50Button.Size = UDim2.new(0, 120, 0, 26)
-    AutoJoin50Button.Position = UDim2.new(1, -130, 0.5, -13)
-    AutoJoin50Button.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-    AutoJoin50Button.BorderSizePixel = 0
-    AutoJoin50Button.Text = "Auto 50M+ OFF"
-    AutoJoin50Button.Font = Enum.Font.GothamBold
-    AutoJoin50Button.TextSize = 12
-    AutoJoin50Button.TextColor3 = Color3.fromRGB(255,255,255)
-    AutoJoin50Button.Parent = TitleBar50
+    --===== TOP BAR AUTO JOIN =====
+    local ControlBar = Instance.new("Frame")
+    ControlBar.Size = UDim2.new(1, -20, 0, 32)
+    ControlBar.Position = UDim2.new(0, 10, 0, 48)
+    ControlBar.BackgroundColor3 = Color3.fromRGB(19,19,24)
+    ControlBar.BorderSizePixel = 0
+    ControlBar.Parent = MainFrame
 
-    local AutoJoin50Corner = Instance.new("UICorner")
-    AutoJoin50Corner.CornerRadius = UDim.new(0, 8)
-    AutoJoin50Corner.Parent = AutoJoin50Button
+    local ControlCorner = Instance.new("UICorner")
+    ControlCorner.CornerRadius = UDim.new(0, 8)
+    ControlCorner.Parent = ControlBar
 
-    local AutoJoin50Stroke = Instance.new("UIStroke")
-    AutoJoin50Stroke.Thickness = 1.2
-    AutoJoin50Stroke.Color = Color3.fromRGB(255, 180, 80)
-    AutoJoin50Stroke.Transparency = 0.3
-    AutoJoin50Stroke.Parent = AutoJoin50Button
+    local AutoJoinLabel = Instance.new("TextLabel")
+    AutoJoinLabel.Size = UDim2.new(0, 120, 1, 0)
+    AutoJoinLabel.Position = UDim2.new(0, 10, 0, 0)
+    AutoJoinLabel.BackgroundTransparency = 1
+    AutoJoinLabel.Text = "Auto Join:"
+    AutoJoinLabel.Font = Enum.Font.GothamSemibold
+    AutoJoinLabel.TextSize = 14
+    AutoJoinLabel.TextColor3 = Color3.fromRGB(220,220,230)
+    AutoJoinLabel.TextXAlignment = Enum.TextXAlignment.Left
+    AutoJoinLabel.Parent = ControlBar
 
-    local function updateAutoJoin50Visual()
-        if autoJoin50Enabled then
-            AutoJoin50Button.BackgroundColor3 = Color3.fromRGB(210, 140, 40)
-            AutoJoin50Stroke.Color = Color3.fromRGB(255, 230, 120)
-            AutoJoin50Button.Text = "Auto 50M+ ON"
+    local AutoJoinButton = Instance.new("TextButton")
+    AutoJoinButton.Size = UDim2.new(0, 90, 0, 26)
+    AutoJoinButton.Position = UDim2.new(0, 110, 0.5, -13)
+    AutoJoinButton.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    AutoJoinButton.BorderSizePixel = 0
+    AutoJoinButton.Text = "OFF"
+    AutoJoinButton.Font = Enum.Font.GothamBold
+    AutoJoinButton.TextSize = 14
+    AutoJoinButton.TextColor3 = Color3.fromRGB(255,255,255)
+    AutoJoinButton.Parent = ControlBar
+
+    local AutoJoinCorner = Instance.new("UICorner")
+    AutoJoinCorner.CornerRadius = UDim.new(0, 8)
+    AutoJoinCorner.Parent = AutoJoinButton
+
+    local AutoJoinStroke = Instance.new("UIStroke")
+    AutoJoinStroke.Thickness = 1.4
+    AutoJoinStroke.Color = Color3.fromRGB(200, 60, 60)
+    AutoJoinStroke.Transparency = 0.2
+    AutoJoinStroke.Parent = AutoJoinButton
+
+    local function updateAutoJoinVisual()
+        if autoJoinEnabled then
+            AutoJoinButton.BackgroundColor3 = Color3.fromRGB(0, 170, 90)
+            AutoJoinStroke.Color = Color3.fromRGB(0, 255, 140)
+            AutoJoinButton.Text = "ON"
         else
-            AutoJoin50Button.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-            AutoJoin50Stroke.Color = Color3.fromRGB(255, 180, 80)
-            AutoJoin50Button.Text = "Auto 50M+ OFF"
+            AutoJoinButton.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+            AutoJoinStroke.Color = Color3.fromRGB(200, 60, 60)
+            AutoJoinButton.Text = "OFF"
         end
     end
-    updateAutoJoin50Visual()
+    updateAutoJoinVisual()
 
-    AutoJoin50Button.MouseButton1Click:Connect(function()
-        autoJoin50Enabled = not autoJoin50Enabled
-        updateAutoJoin50Visual()
+    AutoJoinButton.MouseButton1Click:Connect(function()
+        autoJoinEnabled = not autoJoinEnabled
+        updateAutoJoinVisual()
     end)
 
-    -- Tab 50M-/50M+
+    --===== LEFT TAB BAR 10M-/10M+ =====
+    local TabBar = Instance.new("Frame")
+    TabBar.Size = UDim2.new(0, 80, 1, -98)
+    TabBar.Position = UDim2.new(0, 10, 0, 88)
+    TabBar.BackgroundColor3 = Color3.fromRGB(18,18,24)
+    TabBar.BorderSizePixel = 0
+    TabBar.Parent = MainFrame
+
+    local TabCorner = Instance.new("UICorner")
+    TabCorner.CornerRadius = UDim.new(0, 8)
+    TabCorner.Parent = TabBar
+
+    local TabStroke = Instance.new("UIStroke")
+    TabStroke.Thickness = 1
+    TabStroke.Color = Color3.fromRGB(50,80,120)
+    TabStroke.Transparency = 0.4
+    TabStroke.Parent = TabBar
+
     local tabActiveColor   = Color3.fromRGB(0, 180, 120)
     local tabInactiveColor = Color3.fromRGB(40, 40, 55)
 
-    local TabBar50 = Instance.new("Frame")
-    TabBar50.Size = UDim2.new(0, 90, 1, -50)
-    TabBar50.Position = UDim2.new(0, 10, 0, 46)
-    TabBar50.BackgroundColor3 = Color3.fromRGB(20,18,26)
-    TabBar50.BorderSizePixel = 0
-    TabBar50.Parent = MainFrame50
+    local BtnLow = Instance.new("TextButton")
+    BtnLow.Size = UDim2.new(1, -12, 0, 32)
+    BtnLow.Position = UDim2.new(0, 6, 0, 10)
+    BtnLow.BackgroundColor3 = tabInactiveColor
+    BtnLow.BorderSizePixel = 0
+    BtnLow.Text = "10M-"
+    BtnLow.Font = Enum.Font.GothamBold
+    BtnLow.TextSize = 14
+    BtnLow.TextColor3 = Color3.fromRGB(230,230,230)
+    BtnLow.Parent = TabBar
 
-    local TabCorner50 = Instance.new("UICorner")
-    TabCorner50.CornerRadius = UDim.new(0, 8)
-    TabCorner50.Parent = TabBar50
+    local BtnLowCorner = Instance.new("UICorner")
+    BtnLowCorner.CornerRadius = UDim.new(0, 8)
+    BtnLowCorner.Parent = BtnLow
 
-    local TabStroke50 = Instance.new("UIStroke")
-    TabStroke50.Thickness = 1
-    TabStroke50.Color = Color3.fromRGB(255, 200, 100)
-    TabStroke50.Transparency = 0.4
-    TabStroke50.Parent = TabBar50
+    local BtnHigh = Instance.new("TextButton")
+    BtnHigh.Size = UDim2.new(1, -12, 0, 32)
+    BtnHigh.Position = UDim2.new(0, 6, 0, 52)
+    BtnHigh.BackgroundColor3 = tabActiveColor -- default tab
+    BtnHigh.BorderSizePixel = 0
+    BtnHigh.Text = "10M+"
+    BtnHigh.Font = Enum.Font.GothamBold
+    BtnHigh.TextSize = 14
+    BtnHigh.TextColor3 = Color3.fromRGB(230,230,230)
+    BtnHigh.Parent = TabBar
 
-    local BtnLow50 = Instance.new("TextButton")
-    BtnLow50.Size = UDim2.new(1, -12, 0, 32)
-    BtnLow50.Position = UDim2.new(0, 6, 0, 10)
-    BtnLow50.BackgroundColor3 = tabInactiveColor
-    BtnLow50.BorderSizePixel = 0
-    BtnLow50.Text = "50M-"
-    BtnLow50.Font = Enum.Font.GothamBold
-    BtnLow50.TextSize = 14
-    BtnLow50.TextColor3 = Color3.fromRGB(230,230,230)
-    BtnLow50.Parent = TabBar50
+    local BtnHighCorner = Instance.new("UICorner")
+    BtnHighCorner.CornerRadius = UDim.new(0, 8)
+    BtnHighCorner.Parent = BtnHigh
 
-    local BtnLow50Corner = Instance.new("UICorner")
-    BtnLow50Corner.CornerRadius = UDim.new(0, 8)
-    BtnLow50Corner.Parent = BtnLow50
+    --===== SCROLLING LISTS =====
+    ScrollingLow = Instance.new("ScrollingFrame")
+    ScrollingLow.Size = UDim2.new(1, -110, 1, -98)
+    ScrollingLow.Position = UDim2.new(0, 100, 0, 88)
+    ScrollingLow.CanvasSize = UDim2.new(0, 0, 0, 0)
+    ScrollingLow.ScrollBarThickness = 6
+    ScrollingLow.BackgroundColor3 = Color3.fromRGB(12,12,16)
+    ScrollingLow.BackgroundTransparency = 0.1
+    ScrollingLow.BorderSizePixel = 0
+    ScrollingLow.Visible = false -- vì tab default là HIGH
+    ScrollingLow.Parent = MainFrame
 
-    local BtnHigh50 = Instance.new("TextButton")
-    BtnHigh50.Size = UDim2.new(1, -12, 0, 32)
-    BtnHigh50.Position = UDim2.new(0, 6, 0, 52)
-    BtnHigh50.BackgroundColor3 = tabActiveColor
-    BtnHigh50.BorderSizePixel = 0
-    BtnHigh50.Text = "50M+"
-    BtnHigh50.Font = Enum.Font.GothamBold
-    BtnHigh50.TextSize = 14
-    BtnHigh50.TextColor3 = Color3.fromRGB(230,230,230)
-    BtnHigh50.Parent = TabBar50
+    local ScrollingLowCorner = Instance.new("UICorner")
+    ScrollingLowCorner.CornerRadius = UDim.new(0, 8)
+    ScrollingLowCorner.Parent = ScrollingLow
 
-    local BtnHigh50Corner = Instance.new("UICorner")
-    BtnHigh50Corner.CornerRadius = UDim.new(0, 8)
-    BtnHigh50Corner.Parent = BtnHigh50
+    local LayoutLow = Instance.new("UIListLayout")
+    LayoutLow.Padding = UDim.new(0,8)
+    LayoutLow.SortOrder = Enum.SortOrder.LayoutOrder
+    LayoutLow.Parent = ScrollingLow
 
-    -- Scrolling 50M-/50M+
-    ScrollingLow50 = Instance.new("ScrollingFrame")
-    ScrollingLow50.Size = UDim2.new(1, -120, 1, -60)
-    ScrollingLow50.Position = UDim2.new(0, 110, 0, 52)
-    ScrollingLow50.CanvasSize = UDim2.new(0, 0, 0, 0)
-    ScrollingLow50.ScrollBarThickness = 6
-    ScrollingLow50.BackgroundColor3 = Color3.fromRGB(12,10,18)
-    ScrollingLow50.BackgroundTransparency = 0.1
-    ScrollingLow50.BorderSizePixel = 0
-    ScrollingLow50.Visible = false
-    ScrollingLow50.Parent = MainFrame50
-
-    local ScrollingLow50Corner = Instance.new("UICorner")
-    ScrollingLow50Corner.CornerRadius = UDim.new(0, 8)
-    ScrollingLow50Corner.Parent = ScrollingLow50
-
-    local LayoutLow50 = Instance.new("UIListLayout")
-    LayoutLow50.Padding = UDim.new(0,8)
-    LayoutLow50.SortOrder = Enum.SortOrder.LayoutOrder
-    LayoutLow50.Parent = ScrollingLow50
-
-    LayoutLow50:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        ScrollingLow50.CanvasSize = UDim2.new(0, 0, 0, LayoutLow50.AbsoluteContentSize.Y + 20)
+    LayoutLow:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        ScrollingLow.CanvasSize = UDim2.new(0, 0, 0, LayoutLow.AbsoluteContentSize.Y + 20)
     end)
 
-    ScrollingHigh50 = Instance.new("ScrollingFrame")
-    ScrollingHigh50.Size = UDim2.new(1, -120, 1, -60)
-    ScrollingHigh50.Position = UDim2.new(0, 110, 0, 52)
-    ScrollingHigh50.CanvasSize = UDim2.new(0, 0, 0, 0)
-    ScrollingHigh50.ScrollBarThickness = 6
-    ScrollingHigh50.BackgroundColor3 = Color3.fromRGB(12,10,18)
-    ScrollingHigh50.BackgroundTransparency = 0.1
-    ScrollingHigh50.BorderSizePixel = 0
-    ScrollingHigh50.Visible = true
-    ScrollingHigh50.Parent = MainFrame50
+    ScrollingHigh = Instance.new("ScrollingFrame")
+    ScrollingHigh.Size = UDim2.new(1, -110, 1, -98)
+    ScrollingHigh.Position = UDim2.new(0, 100, 0, 88)
+    ScrollingHigh.CanvasSize = UDim2.new(0, 0, 0, 0)
+    ScrollingHigh.ScrollBarThickness = 6
+    ScrollingHigh.BackgroundColor3 = Color3.fromRGB(12,12,16)
+    ScrollingHigh.BackgroundTransparency = 0.1
+    ScrollingHigh.BorderSizePixel = 0
+    ScrollingHigh.Visible = true
+    ScrollingHigh.Parent = MainFrame
 
-    local ScrollingHigh50Corner = Instance.new("UICorner")
-    ScrollingHigh50Corner.CornerRadius = UDim.new(0, 8)
-    ScrollingHigh50Corner.Parent = ScrollingHigh50
+    local ScrollingHighCorner = Instance.new("UICorner")
+    ScrollingHighCorner.CornerRadius = UDim.new(0, 8)
+    ScrollingHighCorner.Parent = ScrollingHigh
 
-    local LayoutHigh50 = Instance.new("UIListLayout")
-    LayoutHigh50.Padding = UDim.new(0,8)
-    LayoutHigh50.SortOrder = Enum.SortOrder.LayoutOrder
-    LayoutHigh50.Parent = ScrollingHigh50
+    local LayoutHigh = Instance.new("UIListLayout")
+    LayoutHigh.Padding = UDim.new(0,8)
+    LayoutHigh.SortOrder = Enum.SortOrder.LayoutOrder
+    LayoutHigh.Parent = ScrollingHigh
 
-    LayoutHigh50:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-        ScrollingHigh50.CanvasSize = UDim2.new(0, 0, 0, LayoutHigh50.AbsoluteContentSize.Y + 20)
+    LayoutHigh:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        ScrollingHigh.CanvasSize = UDim2.new(0, 0, 0, LayoutHigh.AbsoluteContentSize.Y + 20)
     end)
 
-    local function setTab50(tab)
-        currentTab50 = tab
+    local function setTab(tab)
+        currentTab = tab
         if tab == "LOW" then
-            BtnLow50.BackgroundColor3  = tabActiveColor
-            BtnHigh50.BackgroundColor3 = tabInactiveColor
-            ScrollingLow50.Visible      = true
-            ScrollingHigh50.Visible     = false
+            BtnLow.BackgroundColor3  = tabActiveColor
+            BtnHigh.BackgroundColor3 = tabInactiveColor
+            ScrollingLow.Visible      = true
+            ScrollingHigh.Visible     = false
         else
-            BtnLow50.BackgroundColor3  = tabInactiveColor
-            BtnHigh50.BackgroundColor3 = tabActiveColor
-            ScrollingLow50.Visible      = false
-            ScrollingHigh50.Visible     = true
+            BtnLow.BackgroundColor3  = tabInactiveColor
+            BtnHigh.BackgroundColor3 = tabActiveColor
+            ScrollingLow.Visible      = false
+            ScrollingHigh.Visible     = true
         end
     end
 
-    BtnLow50.MouseButton1Click:Connect(function()
-        setTab50("LOW")
+    BtnLow.MouseButton1Click:Connect(function()
+        setTab("LOW")
     end)
 
-    BtnHigh50.MouseButton1Click:Connect(function()
-        setTab50("HIGH")
+    BtnHigh.MouseButton1Click:Connect(function()
+        setTab("HIGH")
     end)
 
-    -- Ctrl hide / show
+    -- Ctrl để ẩn/hiện
     UIS.InputBegan:Connect(function(input, gpe)
         if gpe then return end
         if input.KeyCode == Enum.KeyCode.LeftControl then
-            MainFrame50.Visible = not MainFrame50.Visible
+            MainFrame.Visible = not MainFrame.Visible
         end
     end)
 end
@@ -454,7 +485,7 @@ end
 createUI()
 
 --==================================================
--- LẤY MPS TỪ MODEL
+-- GET MPS TỪ MODEL
 --==================================================
 local function getMpsFromModel(pet)
     local mpsObj = pet:FindFirstChild("MPS")
@@ -485,12 +516,13 @@ local function getMpsFromModel(pet)
 end
 
 --==================================================
--- MAIN LOOP – CHỈ brainrot, chỉ >=10M
+-- MAIN LOOP – luôn quét, chỉ brainrot
+--  🔁 W=6s → thua UI 2 (W=3s) đúng 3 giây
 --==================================================
-warn("[PetsFinder50M] ✅ v10 started.")
+warn("[PetsFinder UI1] ✅ v9.8 started.")
 
 spawn(function()
-    while task.wait(3) do   -- 🔁 muốn UI này nhanh hơn UI1 3s thì script UI1 để wait(6) chẳng hạn
+    while task.wait(6) do  -- ⬅️ CHỈNH 3 → 6 để chậm hơn 3s
         local jobId   = tostring(game.JobId or "N/A")
         local placeId = game.PlaceId
 
@@ -510,7 +542,7 @@ spawn(function()
         for _, pet in ipairs(candidates) do
             local displayName = detectBrainrotName(pet)
             if not displayName then
-                continue
+                continue -- không phải brainrot
             end
 
             local mps = select(1, getMpsFromModel(pet))
@@ -525,18 +557,16 @@ spawn(function()
             bestMpsPerPet[pet] = mps
 
             warn(string.format(
-                "[PetsFinder50M] Found %s | MPS=%d (prev=%d)",
+                "[PetsFinder UI1] Found %s (Brainrot) | MPS=%d (prev=%d)",
                 displayName, mps, prevBest
             ))
 
-            local over50 = (mps >= SPLIT_MPS)
-
-            -- bucket cho UI (LOW = 10–50M, HIGH = >=50M)
-            local bucket
-            if mps >= TEN_MPS and mps < SPLIT_MPS then
-                bucket = "LOW"
-            elseif mps >= SPLIT_MPS then
+            local over50   = (mps > SPLIT_MPS)
+            local bucket   -- "LOW" (1–10M) hay "HIGH" (10–50M)
+            if mps >= TEN_MPS and mps <= SPLIT_MPS then
                 bucket = "HIGH"
+            elseif mps >= MIN_MPS and mps < TEN_MPS then
+                bucket = "LOW"
             end
 
             local joinLink = ("https://chillihub1.github.io/chillihub-joiner/?placeId=%s&gameInstanceId=%s")
@@ -544,7 +574,7 @@ spawn(function()
 
             local title = over50
                 and "🔔 **Pet >50M Found! (Brainrot)**"
-                or  "🔔 **Pet 10M–50M Found! (Brainrot)**"
+                or  "🔔 **Pet Found! (Brainrot, 1M–50M)**"
 
             local content = table.concat({
                 title,
@@ -554,26 +584,25 @@ spawn(function()
                 "🌐 [JOIN HERE](" .. joinLink .. ")"
             }, "\n")
 
-            -- UI hiển thị
-            if bucket == "LOW" then
-                AddPetItem(ScrollingLow50, displayName, mps, jobId, false)
-            elseif bucket == "HIGH" then
-                AddPetItem(ScrollingHigh50, displayName, mps, jobId, true)
+            if over50 then
+                -- >50M: chỉ webhook VIP
+                sendWebhook(webhook_over50, { content = content })
+            else
+                -- 1M–50M: UI + Auto Join + webhook_high
+                if bucket == "LOW" then
+                    AddPetItem(ScrollingLow, displayName, mps, jobId)
+                elseif bucket == "HIGH" then
+                    AddPetItem(ScrollingHigh, displayName, mps, jobId)
+                end
 
-                -- Auto join chỉ 50M+
-                if autoJoin50Enabled and not joinedJobs[jobId] then
-                    joinedJobs[jobId] = true
+                if autoJoinEnabled and bucket == currentTab and not autoJoinedJobs[jobId] then
+                    autoJoinedJobs[jobId] = true
                     pcall(function()
                         TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
                     end)
                 end
-            end
 
-            -- Webhook
-            if over50 then
-                sendWebhook(webhook_over50, { content = content })
-            else
-                sendWebhook(webhook_10to50, { content = content })
+                sendWebhook(webhook_high, { content = content })
             end
         end
     end
