@@ -1,13 +1,18 @@
 --==================================================
--- ⏳ TANPHU PETS FINDER v9.3 – UI CHỈ HIỆN ≤50M
+-- ⏳ TANPHU PETS FINDER v9.4
+--   • Quét liên tục, người join sau vẫn bị quét
+--   • Chỉ brainrot trong targets
+--   • MPS từ 1M trở lên mới tính
+--   • 1M–50M  → UI + Auto Join + webhook_high
+--   • >50M    → CHỈ webhook_over50 (không UI, không Auto Join)
 --==================================================
 repeat task.wait() until game:IsLoaded()
 
-if _G.TanPhuPetsFinder_v9_3_Loaded then
+if _G.TanPhuPetsFinder_v9_4_Loaded then
     warn("[PetsFinder] Script đã chạy, không chạy lại.")
     return
 end
-_G.TanPhuPetsFinder_v9_3_Loaded = true
+_G.TanPhuPetsFinder_v9_4_Loaded = true
 
 local Players         = game:GetService("Players")
 local HttpService     = game:GetService("HttpService")
@@ -130,8 +135,8 @@ end
 --==================================================
 -- NGƯỠNG & WEBHOOK
 --==================================================
-local MIN_TARGET_MPS = 2_000_000
-local SPLIT_MPS      = 50_000_000
+local MIN_TARGET_MPS = 1_000_000      -- ⬅️ chỉnh 1M
+local SPLIT_MPS      = 50_000_000     -- chia 50M
 
 local webhook_high   = "https://discordapp.com/api/webhooks/1411329828904374293/elK3umTJvdL6h4ml-EHg9DbM1wCdQJFpOsNWEEB79T0P1hRstSgd_ep75KIp-aHdIdoK"
 local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/KD8clDHrbOMKlArHAoEyMXTqQGD6AAN7ftlYvdkFEOj5a9_VEGA9yqAhoH2XPK77TITb"
@@ -140,7 +145,7 @@ local webhook_over50 = "https://discordapp.com/api/webhooks/1410314122670903491/
 local bestMpsPerPet = {}
 
 --==================================================
--- UI + AUTO JOIN
+-- UI + AUTO JOIN (chỉ cho ≤50M)
 --==================================================
 local autoJoinEnabled = false
 local autoJoinedJobs  = {}
@@ -287,10 +292,10 @@ end
 
 local ScreenGui, MainFrame, Scrolling, UIListLayout = createUI()
 
-local function AddPetItem(petName, mps, jobId, isOver50)
+local function AddPetItem(petName, mps, jobId)
     local Item = Instance.new("Frame")
     Item.Size = UDim2.new(1, -8, 0, 42)
-    Item.BackgroundColor3 = isOver50 and Color3.fromRGB(55, 26, 26) or Color3.fromRGB(32,40,55)
+    Item.BackgroundColor3 = Color3.fromRGB(32,40,55)
     Item.BorderSizePixel = 0
     Item.Parent = Scrolling
 
@@ -300,8 +305,8 @@ local function AddPetItem(petName, mps, jobId, isOver50)
 
     local ItemStroke = Instance.new("UIStroke")
     ItemStroke.Thickness = 1
-    ItemStroke.Color = isOver50 and Color3.fromRGB(255, 80, 80) or Color3.fromRGB(0,200,255)
-    ItemStroke.Transparency = isOver50 and 0.1 or 0.15
+    ItemStroke.Color = Color3.fromRGB(0,200,255)
+    ItemStroke.Transparency = 0.15
     ItemStroke.Parent = Item
 
     local Name = Instance.new("TextLabel")
@@ -320,7 +325,7 @@ local function AddPetItem(petName, mps, jobId, isOver50)
     Farm.Position = UDim2.new(0.55, 0, 0, 0)
     Farm.BackgroundTransparency = 1
     Farm.Text = formatMpsShort(mps) .. "/s"
-    Farm.TextColor3 = isOver50 and Color3.fromRGB(255, 200, 200) or Color3.fromRGB(180,180,190)
+    Farm.TextColor3 = Color3.fromRGB(180,180,190)
     Farm.Font = Enum.Font.Gotham
     Farm.TextSize = 13
     Farm.Parent = Item
@@ -328,7 +333,7 @@ local function AddPetItem(petName, mps, jobId, isOver50)
     local Join = Instance.new("TextButton")
     Join.Size = UDim2.new(0.2, -10, 0, 30)
     Join.Position = UDim2.new(0.8, 0, 0.5, -15)
-    Join.BackgroundColor3 = isOver50 and Color3.fromRGB(200,40,40) or Color3.fromRGB(0,140,255)
+    Join.BackgroundColor3 = Color3.fromRGB(0,140,255)
     Join.Text = "Join"
     Join.TextColor3 = Color3.fromRGB(255,255,255)
     Join.Font = Enum.Font.GothamBold
@@ -377,9 +382,9 @@ local function getMpsFromModel(pet)
 end
 
 --==================================================
--- MAIN LOOP – UI chỉ nhận ≤50M
+-- MAIN LOOP – luôn quét, kể cả người join sau
 --==================================================
-warn("[PetsFinder] ✅ v9.3 started.")
+warn("[PetsFinder] ✅ v9.4 started.")
 
 spawn(function()
     while task.wait(3) do
@@ -423,7 +428,7 @@ spawn(function()
                 :format(placeId, jobId)
 
             local content = table.concat({
-                over50 and "🔔 **Pet >50M Found! (Brainrot)**" or "🔔 **Pet Found! (Brainrot, ≤50M)**",
+                over50 and "🔔 **Pet >50M Found! (Brainrot)**" or "🔔 **Pet Found! (Brainrot, 1M–50M)**",
                 "🐾 Name: " .. displayName,
                 "💸 MPS: " .. formatMpsShort(mps) .. "/s",
                 "🆔 Job ID: `" .. jobId .. "`",
@@ -431,11 +436,11 @@ spawn(function()
             }, "\n")
 
             if over50 then
-                -- >50M: CHỈ WEBHOOK, KHÔNG UI, KHÔNG AUTO JOIN
+                -- >50M: chỉ webhook
                 sendWebhook(webhook_over50, { content = content })
             else
-                -- ≤50M: UI + WEBHOOK + AUTO JOIN
-                AddPetItem(displayName, mps, jobId, false)
+                -- 1M–50M: UI + Auto Join + webhook_high
+                AddPetItem(displayName, mps, jobId)
 
                 if autoJoinEnabled and not autoJoinedJobs[jobId] then
                     autoJoinedJobs[jobId] = true
