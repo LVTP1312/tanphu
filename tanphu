@@ -47,7 +47,8 @@ env.CTDSummonMilestones = env.CTDSummonMilestones or {}
 env.CTDSummonMilestoneBuilds = env.CTDSummonMilestoneBuilds or {}
 local summonGoal = resume and resume.summonGoal or env.CTDSummonMilestones[player.UserId]
 local summonBuild = resume and resume.summonBuild or env.CTDSummonMilestoneBuilds[player.UserId]
-if summonBuild ~= SUMMON_BUILD then summonGoal = COIN_GOAL end
+-- A fresh launch checks the current balance, while teleports retain the next milestone.
+if not resume or summonBuild ~= SUMMON_BUILD then summonGoal = COIN_GOAL end
 if type(summonGoal) ~= "number" or summonGoal < COIN_GOAL or summonGoal >= math.huge
     or summonGoal % COIN_GOAL ~= 0 then summonGoal = COIN_GOAL end
 env.CTDSummonMilestones[player.UserId] = summonGoal
