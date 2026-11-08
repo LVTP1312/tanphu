@@ -5,6 +5,7 @@ return function(source, resume)
 local LOBBY = 132929771812494
 local MATCH = 114068177100380
 local COIN_GOAL = 900
+local TARGET_FPS = 10
 local WAVE_LIMITS = {Easy = 20, Normal = 30}
 local LARGE = "Large Cameraman"
 local TV_MAN = "TV Man"
@@ -37,11 +38,24 @@ if not gui then return end
 local env = getgenv()
 if resume and resume.userId ~= player.UserId then return end
 if type(env.CTDToiletCityStop) == "function" then env.CTDToiletCityStop() end
-if type(setfpscap) == "function" then
-    local ok = pcall(setfpscap, 5)
-    if not ok then warn("[CTD] Could not apply the 5 FPS limit.") end
-else
-    warn("[CTD] This executor does not provide setfpscap.")
+env.CTDSummonMilestones = env.CTDSummonMilestones or {}
+local summonGoal = resume and resume.summonGoal or env.CTDSummonMilestones[player.UserId]
+if type(summonGoal) ~= "number" or summonGoal < COIN_GOAL or summonGoal >= math.huge
+    or summonGoal % COIN_GOAL ~= 0 then summonGoal = COIN_GOAL end
+env.CTDSummonMilestones[player.UserId] = summonGoal
+local function advanceSummonGoal(coins)
+    summonGoal = (math.floor(coins / COIN_GOAL) + 1) * COIN_GOAL
+    env.CTDSummonMilestones[player.UserId] = summonGoal
+end
+local capRequested = type(setfpscap) == "function" and pcall(setfpscap, TARGET_FPS)
+if not capRequested then
+    warn(("[CTD] Could not request %d FPS from the executor."):format(TARGET_FPS))
+elseif type(getfpscap) == "function" then
+    local ok, cap = pcall(getfpscap)
+    if ok and type(cap) == "number" and cap > TARGET_FPS then
+        warn(("[CTD] Executor reports a cap of %s FPS after requesting %d. On LDPlayer, use Multi-open Optimization.")
+            :format(tostring(cap), TARGET_FPS))
+    end
 end
 local connections = {}
 local alive = true
@@ -383,8 +397,8 @@ local function queueSource(fields)
     if alerts.busy and os.time() - alerts.busySince < 30 then return false end
     local queue = queue_on_teleport or queueonteleport
     if type(queue) ~= "function" then return false end
-    local queued = ("local s=%q\nassert(loadstring(s))()(s,{userId=%s,alerts=%q,alertRetryAt=%d,%s})"):format(
-        source, tostring(player.UserId), HttpService:JSONEncode(alerts.sent), math.ceil(alerts.nextSend), fields)
+    local queued = ("local s=%q\nassert(loadstring(s))()(s,{userId=%s,alerts=%q,alertRetryAt=%d,summonGoal=%d,%s})"):format(
+        source, tostring(player.UserId), HttpService:JSONEncode(alerts.sent), math.ceil(alerts.nextSend), summonGoal, fields)
     local ok, result = pcall(queue, queued)
     return ok and result ~= false
 end
@@ -401,17 +415,39 @@ if game.PlaceId == LOBBY then
     local function watchedSummonUnit(frame)
         local title = find(frame, "List", "Title")
         local pool = find(frame, "List", "Units")
-        if not title or not title:IsA("TextLabel") or title.Text ~= "Basic Crate"
-            or not pool or not visible(pool, gui) then return nil end
+        if not title or not title:IsA("TextLabel")
+            or title.Text:gsub("<[^>]+>", ""):match("^%s*(.-)%s*$"):lower() ~= "basic crate"
+            or not pool or not visible(pool, gui) then return nil, false end
+        local ready, rows, total = true, 0, 0
+        local entries = {}
         for _, row in ipairs(pool:GetChildren()) do
-            local name = find(row, "UnitFrame", "UnitName")
-            local chance = find(row, "UnitFrame", "UnitChance")
-            if not name or not name:IsA("TextLabel") or not visible(name, gui)
-                or not chance or not chance:IsA("TextLabel") or not visible(chance, gui) then continue end
-            local target = watchedName(name.Text:gsub("<[^>]+>", ""))
-            local percent = tonumber(chance.Text:gsub("<[^>]+>", ""):match("^%s*([%d%.]+)%%%s*$"))
-            if target and percent and percent > 0 then return target end
+            if not row:IsA("GuiObject") or not visible(row, gui) then continue end
+            local unitFrame = row:FindFirstChild("UnitFrame", true) or row
+            rows += 1
+            local target, percent, label, ambiguous
+            local texts = unitFrame:GetDescendants()
+            table.insert(texts, 1, unitFrame)
+            for _, object in ipairs(texts) do
+                if (object:IsA("TextLabel") or object:IsA("TextButton")) and visible(object, gui) then
+                    local text = object.Text:gsub("<[^>]+>", ""):gsub("\194\160", " ")
+                    target = target or watchedName(text)
+                    local odds = tonumber((text:gsub(",", "."):match("^%s*([%d%.]+)%s*%%%s*$")))
+                    if odds then
+                        if percent and percent ~= odds then ambiguous = true end
+                        percent = odds
+                    end
+                    if object.Name == "UnitName" or (not odds and text:find("%a")) then label = text end
+                end
+            end
+            if ambiguous or not label or not percent or percent < 0 or percent > 100 then
+                ready = false
+                continue
+            end
+            total += percent
+            table.insert(entries, label .. " " .. tostring(percent) .. "%")
+            if target and percent > 0 then return target, true, target .. " " .. tostring(percent) .. "%" end
         end
+        return nil, ready and rows > 0 and math.abs(total - 100) < 0.1, table.concat(entries, " | ")
     end
 
     local function cleanSurplus(storage, inventory, now)
@@ -483,11 +519,14 @@ if game.PlaceId == LOBBY then
         if roll and roll.sentAt then
             if not roll.confirmedAt and roll.ok and coins <= roll.before - COIN_GOAL then
                 roll.confirmedAt = now
+                advanceSummonGoal(coins)
             end
             if roll.confirmedAt then
                 if now >= roll.confirmedAt + 3 then
                     notifyRare(profile.Towers, true)
-                    return cleanSurplus(storage, profile.Towers, now)
+                    if cleanSurplus(storage, profile.Towers, now) then return true end
+                    roll, env.CTDToiletCitySummon = nil, nil
+                    return false
                 end
                 status.Text = "Summon x10 confirmed. Checking your units..."
             elseif now - roll.sentAt >= 30 or roll.ok == false then
@@ -497,37 +536,58 @@ if game.PlaceId == LOBBY then
             end
             return true
         end
-        if coins < COIN_GOAL then return false end
+        if coins < summonGoal then return false end
 
-        local zone = find(workspace, "Zones", "Summon")
-        local character = player.Character
         local frame = find(gui, "Main", "Main", "Summon", "SummonFrame")
         local button = find(frame, "Buttons", "Summon10Button")
         local remote = find(storage, "ModuleLoader", "Shared", "Network", "RemoteFunction", "SummonTowers")
-        if not zone or not zone:IsA("PVInstance") or not character
-            or not character:FindFirstChild("HumanoidRootPart") then
-            status.Text = "Waiting for the Summon area..."
-            return true
-        end
         if not roll then
-            roll = {job = game.JobId, userId = player.UserId, arrivedAt = now}
+            roll = {job = game.JobId, userId = player.UserId, arrivedAt = now, attempts = 0}
             env.CTDToiletCitySummon = roll
-            character:PivotTo(zone:GetPivot() + Vector3.new(0, 2, 0))
         end
-        if not button or not visible(button, gui) or not remote or not remote:IsA("RemoteFunction") then
+        if not button or not visible(button, gui) then
+            local zone = find(workspace, "Zones", "Summon")
+            local character = player.Character
+            if not zone or not zone:IsA("PVInstance") or not character
+                or not character:FindFirstChild("HumanoidRootPart") then
+                status.Text = "Waiting for the Summon area..."
+                return true
+            end
+            if (roll.attempts or 0) < 3 and now >= (roll.nextEntry or 0) then
+                roll.attempts = (roll.attempts or 0) + 1
+                roll.nextEntry = now + 5
+                character:PivotTo(zone:GetPivot() + Vector3.new(0, 2, 0))
+            end
+            roll.poolSeenAt = nil
             status.Text = now - roll.arrivedAt >= 20 and "Open the Summon panel to continue."
                 or "Waiting for the Summon panel..."
             return true
         end
+        if not remote or not remote:IsA("RemoteFunction") then
+            status.Text = "Waiting for the Basic Crate summon action..."
+            return true
+        end
 
-        local target = watchedSummonUnit(frame)
+        local target, ready, details = watchedSummonUnit(frame)
+        if not ready then
+            roll.poolSeenAt = nil
+            status.Text = "Cannot read the full Summon rotation. Check Delta console."
+            if now >= (roll.nextReadLog or 0) then
+                roll.nextReadLog = now + 15
+                warn("[CTD] Summon rotation unreadable: " .. (details or "Basic Crate panel unavailable"))
+            end
+            return true
+        end
         if not target then
             roll.poolSeenAt = roll.poolSeenAt or now
             if now - roll.poolSeenAt < 5 then
                 status.Text = "Checking the Basic Crate rotation..."
                 return true
             end
-            status.Text = "No tracked unit in Basic Crate. Saving Coins."
+            advanceSummonGoal(coins)
+            warn("[CTD] Summon checked: " .. details .. " | Next check at " .. tostring(summonGoal) .. " Coin")
+            status.Text = ("No tracked unit. Next Summon check at %d Coin."):format(summonGoal)
+            roll, env.CTDToiletCitySummon = nil, nil
             return false
         end
         roll.before, roll.sentAt = coins, now
@@ -647,7 +707,11 @@ if game.PlaceId == LOBBY then
             joining = true
             task.delay(45, function() joining = false end)
             character:PivotTo(target.CFrame + Vector3.new(0, target.Size.Y / 2 + 3, 0))
-            status.Text = "Joining Toilet City " .. mode .. "..."
+            local profile = readProfile(false)
+            local coins = profile and profile.Money
+            local balance = type(coins) == "number" and coins >= 0 and coins < summonGoal
+                and ("%d/%d Coin | "):format(math.floor(coins), summonGoal) or ""
+            status.Text = balance .. "Joining Toilet City " .. mode .. "..."
         else
             status.Text = "No empty Toilet City elevator"
         end
@@ -1174,10 +1238,10 @@ local function setup()
                     local inventory = profile and profile.Towers
                     local desired = type(inventory) == "table" and preferredUnit(inventory)
                     local needsEquip = desired and not isEquipped(desired, inventory)
-                    if coins >= COIN_GOAL or needsEquip then
+                    if coins >= summonGoal or needsEquip then
                         local lobbyButton = find(gui, "GameUI", "FinalUI", "Content", "Lobby")
                         if not lobbyButton or not lobbyButton:IsA("GuiButton") or not visible(lobbyButton, gui) then
-                            status.Text = ("%d/%d Coins | Waiting for Lobby button."):format(coins, COIN_GOAL)
+                            status.Text = ("%d/%d Coins | Waiting for Lobby button."):format(coins, summonGoal)
                             continue
                         end
                         if not queueSource('retries=0') then
@@ -1188,12 +1252,12 @@ local function setup()
                             and pcall(firesignal, lobbyButton.Activated)
                         armed = false
                         action.Text = needsEquip and "Updating loadout" or "Goal reached"
-                        status.Text = ("%d/%d Coins | %s"):format(coins, COIN_GOAL,
+                        status.Text = ("%d/%d Coins | %s"):format(coins, summonGoal,
                             activated and "Returning to lobby..." or "Press Lobby.")
                         if activated then
                             task.delay(15, function()
                                 if alive then
-                                    status.Text = ("%d/%d Coins | Press Lobby if still here."):format(coins, COIN_GOAL)
+                                    status.Text = ("%d/%d Coins | Press Lobby if still here."):format(coins, summonGoal)
                                 end
                             end)
                         end
@@ -1213,7 +1277,7 @@ local function setup()
                         continue
                     end
                     env.CTDToiletCityReplayJob = game.JobId
-                    status.Text = ("%d/%d Coins | Play Again"):format(coins, COIN_GOAL)
+                    status.Text = ("%d/%d Coins | Play Again"):format(coins, summonGoal)
                     if not state.replayPending then replayRemote:FireServer() end
                     break
                 end
@@ -1356,7 +1420,7 @@ local function setup()
             mode, wave, waveLimit, cash, #towers, maxed, phase)
         if workspace:GetAttribute("GameSpeed") == 2 then statusLine ..= " | x2 Speed" end
         local coins = readAccountCoins(false)
-        if coins ~= nil then statusLine = ("%d/%d Coin | "):format(coins, COIN_GOAL) .. statusLine end
+        if coins ~= nil then statusLine = ("%d/%d Coin | "):format(coins, summonGoal) .. statusLine end
         if skipNotice and os.clock() - skipNotice.at < 8 then
             statusLine = ("Skip W%d at %ds | "):format(skipNotice.wave, skipNotice.elapsed) .. statusLine
         end
