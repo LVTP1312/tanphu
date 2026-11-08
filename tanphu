@@ -7,7 +7,7 @@ local MATCH = 114068177100380
 local COIN_GOAL = 900
 local TARGET_SUMMON_CHANCE = 0.01
 local TARGET_FPS = 10
-local SUMMON_BUILD = "summon-slot001-v1"
+local SUMMON_BUILD = "summon-tween-v1"
 local WAVE_LIMITS = {Easy = 20, Normal = 30}
 local LARGE = "Large Cameraman"
 local TV_MAN = "TV Man"
@@ -72,6 +72,7 @@ elseif type(getfpscap) == "function" then
 end
 local connections = {}
 local alive = true
+local cancelMovement
 local screen = Instance.new("ScreenGui")
 screen.Name = "CTDToiletCityEasy"
 screen.ResetOnSpawn = false
@@ -86,6 +87,7 @@ end
 
 local function stop()
     alive = false
+    if cancelMovement then cancelMovement() end
     for _, connection in ipairs(connections) do connection:Disconnect() end
     screen:Destroy()
     if env.CTDToiletCityStop == stop then env.CTDToiletCityStop = nil end
@@ -428,6 +430,132 @@ if game.PlaceId == LOBBY then
     if roll and (roll.job ~= game.JobId or roll.userId ~= player.UserId) then roll = nil end
     if roll and not roll.sentAt then roll.attempts, roll.nextEntry = 0, 0 end
     local summonSpending = roll and roll.spending == true or false
+    local movingToSummon, settleUntil = false, 0
+
+    bind(player.CharacterRemoving, function()
+        if cancelMovement then cancelMovement() end
+    end)
+
+    local function tweenToSummon(zone, entry)
+        local character = player.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if not root or not humanoid or humanoid.Health <= 0 then return false end
+        local center, size
+        if zone:IsA("Model") then center, size = zone:GetBoundingBox()
+        elseif zone:IsA("BasePart") then center, size = zone.CFrame, zone.Size
+        else return false end
+
+        local ignore = {}
+        for _, other in ipairs(Players:GetPlayers()) do
+            if other.Character then table.insert(ignore, other.Character) end
+        end
+        local ray = RaycastParams.new()
+        ray.FilterType = Enum.RaycastFilterType.Exclude
+        ray.FilterDescendantsInstances = ignore
+        ray.RespectCanCollide = true
+        local overlap = OverlapParams.new()
+        overlap.FilterType = Enum.RaycastFilterType.Exclude
+        overlap.RespectCanCollide = true
+        local probe = Instance.new("Part")
+        probe.Name = "CTDSummonLandingProbe"
+        probe.Anchored, probe.CanCollide, probe.CanTouch, probe.CanQuery = true, false, false, false
+        probe.Transparency = 1
+        probe.Parent = workspace
+        overlap.FilterDescendantsInstances = {character, probe}
+        local leg = character:FindFirstChild("Left Leg")
+        local height = root.Size.Y / 2 + humanoid.HipHeight + (leg and leg.Size.Y or 0)
+        local function landing(offset)
+            local origin = center.Position + offset + Vector3.new(0, 15, 0)
+            local hit = workspace:Raycast(origin, Vector3.new(0, -55, 0), ray)
+            if not hit or hit.Normal.Y < 0.8 or hit.Position.Y > center.Position.Y + 4 then return nil end
+            local point = hit.Position + Vector3.new(0, height + 0.25, 0)
+            local body = Vector3.new(2.8, math.max(4, height * 2 - 0.4), 2.8)
+            probe.CFrame, probe.Size = CFrame.new(point), body
+            if #workspace:GetPartsInPart(probe, overlap) > 0 then return nil end
+            return point
+        end
+        local found, inside, outside = pcall(function()
+            local inside, bestDistance
+            for x = -6, 6, 3 do
+                for z = -6, 6, 3 do
+                    local point = landing(Vector3.new(x, 0, z))
+                    local distance = x * x + z * z
+                    if point and (not bestDistance or distance < bestDistance) then
+                        inside, bestDistance = point, distance
+                    end
+                end
+            end
+            local right, up, look = center.RightVector, center.UpVector, center.LookVector
+            local extentX = (math.abs(right.X) * size.X + math.abs(up.X) * size.Y + math.abs(look.X) * size.Z) / 2
+            local extentZ = (math.abs(right.Z) * size.X + math.abs(up.Z) * size.Y + math.abs(look.Z) * size.Z) / 2
+            local outside
+            bestDistance = nil
+            for _, offset in ipairs({Vector3.new(extentX + 8, 0, 0), Vector3.new(-extentX - 8, 0, 0),
+                Vector3.new(0, 0, extentZ + 8), Vector3.new(0, 0, -extentZ - 8)}) do
+                local point = landing(offset)
+                local distance = point and (point - root.Position).Magnitude
+                if point and (not bestDistance or distance < bestDistance) then
+                    outside, bestDistance = point, distance
+                end
+            end
+            return inside, outside
+        end)
+        probe:Destroy()
+        if not found then
+            warn("[CTD] Summon ground check failed", inside)
+            status.Text = "Waiting to check Summon ground..."
+            return false
+        end
+        if not inside or not outside then
+            status.Text = "Waiting for clear ground at Summon..."
+            return false
+        end
+
+        local anchored, autoRotate = root.Anchored, humanoid.AutoRotate
+        local landingFrame = CFrame.new(outside)
+        local tween, deathConnection, finished
+        local function restore()
+            if finished then return end
+            finished = true
+            if tween then tween:Cancel() end
+            if deathConnection then deathConnection:Disconnect() end
+            if root.Parent then
+                root.CFrame = landingFrame
+                root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+                root.Anchored = anchored
+            end
+            if humanoid.Parent then humanoid.AutoRotate = autoRotate end
+            movingToSummon = false
+            settleUntil = os.clock() + 1
+            if roll == entry then entry.nextEntry = os.clock() + 5 end
+            if cancelMovement == restore then cancelMovement = nil end
+        end
+        movingToSummon, cancelMovement = true, restore
+        deathConnection = humanoid.Died:Connect(restore)
+        task.spawn(function()
+            local ok, err = pcall(function()
+                root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+                root.Anchored, humanoid.AutoRotate = true, false
+                humanoid.Sit, humanoid.PlatformStand = false, false
+                for _, point in ipairs({outside, inside}) do
+                    if finished or not alive or player.Character ~= character then return end
+                    local duration = math.clamp((point - root.Position).Magnitude / 40, 0.35, 8)
+                    tween = game:GetService("TweenService"):Create(root,
+                        TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = CFrame.new(point)})
+                    tween:Play()
+                    local result = tween.Completed:Wait()
+                    if finished or result ~= Enum.PlaybackState.Completed then return end
+                    landingFrame = CFrame.new(point)
+                    task.wait(0.4)
+                end
+                if humanoid.Health > 0 then humanoid:ChangeState(Enum.HumanoidStateType.GettingUp) end
+            end)
+            restore()
+            if not ok and alive then warn("[CTD] Summon tween failed", err) end
+        end)
+        return true
+    end
 
     local function watchedSummonUnit(frame)
         local title = find(frame, "List", "Title")
@@ -540,6 +668,10 @@ if game.PlaceId == LOBBY then
             status.Text = "Waiting for your Coin balance..."
             return true
         end
+        if movingToSummon or now < settleUntil then
+            status.Text = movingToSummon and "Tweening to Summon..." or "Waiting to stand safely at Summon..."
+            return true
+        end
         if roll and roll.sentAt then
             if not roll.confirmedAt and roll.ok and coins <= roll.before - COIN_GOAL then
                 roll.confirmedAt = now
@@ -587,15 +719,7 @@ if game.PlaceId == LOBBY then
             if (roll.attempts or 0) < 3 and now >= (roll.nextEntry or 0) then
                 roll.attempts = (roll.attempts or 0) + 1
                 roll.nextEntry = now + 8
-                local entry = roll
-                local center = zone:GetPivot()
-                local size = zone:IsA("Model") and zone:GetExtentsSize() or zone.Size
-                character:PivotTo(center * CFrame.new(size.X / 2 + 10, 2, 0))
-                task.delay(1, function()
-                    if alive and roll == entry and player.Character == character and character.Parent then
-                        character:PivotTo(center + Vector3.new(0, 2, 0))
-                    end
-                end)
+                if not tweenToSummon(zone, roll) then return true end
             end
             roll.poolSeenAt = nil
             status.Text = now - roll.arrivedAt >= 20 and "Open the Summon panel to continue."
