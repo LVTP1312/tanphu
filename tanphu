@@ -421,6 +421,7 @@ if game.PlaceId == LOBBY then
     local summonHandled = false
     local roll = env.CTDToiletCitySummon
     if roll and (roll.job ~= game.JobId or roll.userId ~= player.UserId) then roll = nil end
+    local summonSpending = roll and roll.spending == true or false
 
     local function watchedSummonUnit(frame)
         local title = find(frame, "List", "Title")
@@ -537,6 +538,7 @@ if game.PlaceId == LOBBY then
                     notifyRare(profile.Towers, true)
                     if cleanSurplus(storage, profile.Towers, now) then return true end
                     roll, env.CTDToiletCitySummon = nil, nil
+                    if profile.Money >= COIN_GOAL then return true end
                     summonHandled = true
                     return false
                 end
@@ -556,7 +558,7 @@ if game.PlaceId == LOBBY then
             target, ready, details = watchedSummonUnit(frame)
         end
         -- A visible eligible rotation takes priority over a previously skipped milestone.
-        if coins < COIN_GOAL or (coins < summonGoal and not target) then return false end
+        if coins < COIN_GOAL or (not summonSpending and coins < summonGoal and not target) then return false end
         local remote = find(storage, "ModuleLoader", "Shared", "Network", "RemoteFunction", "SummonTowers")
         if not roll then
             roll = {job = game.JobId, userId = player.UserId, arrivedAt = now, attempts = 0}
@@ -607,13 +609,15 @@ if game.PlaceId == LOBBY then
             roll, env.CTDToiletCitySummon = nil, nil
             return false
         end
-        roll.before, roll.sentAt = coins, now
+        roll.before, roll.sentAt, roll.spending = coins, now, true
+        summonSpending = true
         status.Text = SUMMON_BUILD .. " | Rolling x10 | " .. details
         warn(("[CTD] %s | Coins %d | Basic Crate x10 | %s"):format(SUMMON_BUILD, coins, details))
+        local purchase = roll
         task.spawn(function()
             if not alive then return end
             local ok, result = pcall(function() return remote:InvokeServer("Basic Crate", 10) end)
-            roll.ok = ok and result ~= false
+            purchase.ok = ok and result ~= false
         end)
         return true
     end
