@@ -6,6 +6,7 @@ local LOBBY = 132929771812494
 local MATCH = 114068177100380
 local COIN_GOAL = 900
 local TARGET_FPS = 10
+local SUMMON_BUILD = "summon-scan4"
 local WAVE_LIMITS = {Easy = 20, Normal = 30}
 local LARGE = "Large Cameraman"
 local TV_MAN = "TV Man"
@@ -38,11 +39,16 @@ if not gui then return end
 local env = getgenv()
 if resume and resume.userId ~= player.UserId then return end
 if type(env.CTDToiletCityStop) == "function" then env.CTDToiletCityStop() end
+warn("[CTD] Loaded " .. SUMMON_BUILD)
 env.CTDSummonMilestones = env.CTDSummonMilestones or {}
+env.CTDSummonMilestoneBuilds = env.CTDSummonMilestoneBuilds or {}
 local summonGoal = resume and resume.summonGoal or env.CTDSummonMilestones[player.UserId]
+local summonBuild = resume and resume.summonBuild or env.CTDSummonMilestoneBuilds[player.UserId]
+if summonBuild ~= SUMMON_BUILD then summonGoal = COIN_GOAL end
 if type(summonGoal) ~= "number" or summonGoal < COIN_GOAL or summonGoal >= math.huge
     or summonGoal % COIN_GOAL ~= 0 then summonGoal = COIN_GOAL end
 env.CTDSummonMilestones[player.UserId] = summonGoal
+env.CTDSummonMilestoneBuilds[player.UserId] = SUMMON_BUILD
 local function advanceSummonGoal(coins)
     summonGoal = (math.floor(coins / COIN_GOAL) + 1) * COIN_GOAL
     env.CTDSummonMilestones[player.UserId] = summonGoal
@@ -397,8 +403,8 @@ local function queueSource(fields)
     if alerts.busy and os.time() - alerts.busySince < 30 then return false end
     local queue = queue_on_teleport or queueonteleport
     if type(queue) ~= "function" then return false end
-    local queued = ("local s=%q\nassert(loadstring(s))()(s,{userId=%s,alerts=%q,alertRetryAt=%d,summonGoal=%d,%s})"):format(
-        source, tostring(player.UserId), HttpService:JSONEncode(alerts.sent), math.ceil(alerts.nextSend), summonGoal, fields)
+    local queued = ("local s=%q\nassert(loadstring(s))()(s,{userId=%s,alerts=%q,alertRetryAt=%d,summonGoal=%d,summonBuild=%q,%s})"):format(
+        source, tostring(player.UserId), HttpService:JSONEncode(alerts.sent), math.ceil(alerts.nextSend), summonGoal, SUMMON_BUILD, fields)
     local ok, result = pcall(queue, queued)
     return ok and result ~= false
 end
@@ -422,11 +428,11 @@ if game.PlaceId == LOBBY then
         local entries = {}
         for _, row in ipairs(pool:GetChildren()) do
             if not row:IsA("GuiObject") or not visible(row, gui) then continue end
-            local unitFrame = row:FindFirstChild("UnitFrame", true) or row
             rows += 1
             local target, percent, label, ambiguous
-            local texts = unitFrame:GetDescendants()
-            table.insert(texts, 1, unitFrame)
+            -- The viewport and its name/chance labels may be siblings.
+            local texts = row:GetDescendants()
+            table.insert(texts, 1, row)
             for _, object in ipairs(texts) do
                 if (object:IsA("TextLabel") or object:IsA("TextButton")) and visible(object, gui) then
                     local text = object.Text:gsub("<[^>]+>", ""):gsub("\194\160", " ")
@@ -447,7 +453,8 @@ if game.PlaceId == LOBBY then
             table.insert(entries, label .. " " .. tostring(percent) .. "%")
             if target and percent > 0 then return target, true, target .. " " .. tostring(percent) .. "%" end
         end
-        return nil, ready and rows > 0 and math.abs(total - 100) < 0.1, table.concat(entries, " | ")
+        -- Basic Crate has seven reward cards, including the 0.01% slot.
+        return nil, ready and rows >= 7 and math.abs(total - 100) < 0.1, table.concat(entries, " | ")
     end
 
     local function cleanSurplus(storage, inventory, now)
@@ -536,10 +543,14 @@ if game.PlaceId == LOBBY then
             end
             return true
         end
-        if coins < summonGoal then return false end
-
         local frame = find(gui, "Main", "Main", "Summon", "SummonFrame")
         local button = find(frame, "Buttons", "Summon10Button")
+        local target, ready, details
+        if button and visible(button, gui) then
+            target, ready, details = watchedSummonUnit(frame)
+        end
+        -- A visible eligible rotation takes priority over a previously skipped milestone.
+        if coins < COIN_GOAL or (coins < summonGoal and not target) then return false end
         local remote = find(storage, "ModuleLoader", "Shared", "Network", "RemoteFunction", "SummonTowers")
         if not roll then
             roll = {job = game.JobId, userId = player.UserId, arrivedAt = now, attempts = 0}
@@ -568,10 +579,10 @@ if game.PlaceId == LOBBY then
             return true
         end
 
-        local target, ready, details = watchedSummonUnit(frame)
+        if ready == nil then target, ready, details = watchedSummonUnit(frame) end
         if not ready then
             roll.poolSeenAt = nil
-            status.Text = "Cannot read the full Summon rotation. Check Delta console."
+            status.Text = SUMMON_BUILD .. " | Cannot read full Summon rotation. Check Delta console."
             if now >= (roll.nextReadLog or 0) then
                 roll.nextReadLog = now + 15
                 warn("[CTD] Summon rotation unreadable: " .. (details or "Basic Crate panel unavailable"))
@@ -586,12 +597,13 @@ if game.PlaceId == LOBBY then
             end
             advanceSummonGoal(coins)
             warn("[CTD] Summon checked: " .. details .. " | Next check at " .. tostring(summonGoal) .. " Coin")
-            status.Text = ("No tracked unit. Next Summon check at %d Coin."):format(summonGoal)
+            status.Text = ("%s | No tracked unit. Next check %d Coin."):format(SUMMON_BUILD, summonGoal)
             roll, env.CTDToiletCitySummon = nil, nil
             return false
         end
         roll.before, roll.sentAt = coins, now
-        status.Text = "Rolling Basic x10 | " .. target
+        status.Text = SUMMON_BUILD .. " | Rolling x10 | " .. details
+        warn(("[CTD] %s | Coins %d | Basic Crate x10 | %s"):format(SUMMON_BUILD, coins, details))
         task.spawn(function()
             if not alive then return end
             local ok, result = pcall(function() return remote:InvokeServer("Basic Crate", 10) end)
@@ -680,6 +692,12 @@ if game.PlaceId == LOBBY then
 
     joinMatch = function(mode)
         if joining or pendingEquip then return end
+        local profile = readProfile(false)
+        if not profile then
+            status.Text = "Checking Coins before entering Story..."
+            return
+        end
+        if advanceSummon(game:GetService("ReplicatedStorage"), profile, os.clock()) then return end
         local elevators = workspace:FindFirstChild("Elevators")
         local character = player.Character
         if not elevators or not character or not character:FindFirstChild("HumanoidRootPart") then
