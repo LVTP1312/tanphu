@@ -5,8 +5,9 @@ return function(source, resume)
 local LOBBY = 132929771812494
 local MATCH = 114068177100380
 local COIN_GOAL = 900
+local TARGET_SUMMON_CHANCE = 0.01
 local TARGET_FPS = 10
-local SUMMON_BUILD = "summon-scan4"
+local SUMMON_BUILD = "summon-slot001-v1"
 local WAVE_LIMITS = {Easy = 20, Normal = 30}
 local LARGE = "Large Cameraman"
 local TV_MAN = "TV Man"
@@ -21,6 +22,8 @@ local WATCHED_UNITS = {
     glitchcameramantitan = "Glitch Cameraman Titan",
     titancinema = "Titan Cinema",
     headlesstv = "Headless TV",
+    upgradedtitantvman = "Upgraded Titan TV Man",
+    upgradedvideotaperprototype = "Upgraded Videotaper Prototype",
 }
 
 local function watchedName(name)
@@ -419,9 +422,11 @@ if game.PlaceId == LOBBY then
     local requested = {}
     local joinMatch
     local equipUnconfirmed
+    local skippedSummon = false
     local summonHandled = false
     local roll = env.CTDToiletCitySummon
     if roll and (roll.job ~= game.JobId or roll.userId ~= player.UserId) then roll = nil end
+    if roll and not roll.sentAt then roll.attempts, roll.nextEntry = 0, 0 end
     local summonSpending = roll and roll.spending == true or false
 
     local function watchedSummonUnit(frame)
@@ -430,25 +435,26 @@ if game.PlaceId == LOBBY then
         if not title or not title:IsA("TextLabel")
             or title.Text:gsub("<[^>]+>", ""):match("^%s*(.-)%s*$"):lower() ~= "basic crate"
             or not pool or not visible(pool, gui) then return nil, false end
-        local ready, rows, total = true, 0, 0
+        local ready, rows, total, slotName = true, 0, 0, nil
         local entries = {}
         for _, row in ipairs(pool:GetChildren()) do
             if not row:IsA("GuiObject") or not visible(row, gui) then continue end
             rows += 1
-            local target, percent, label, ambiguous
+            local percent, label, ambiguous
             -- The viewport and its name/chance labels may be siblings.
             local texts = row:GetDescendants()
             table.insert(texts, 1, row)
             for _, object in ipairs(texts) do
                 if (object:IsA("TextLabel") or object:IsA("TextButton")) and visible(object, gui) then
                     local text = object.Text:gsub("<[^>]+>", ""):gsub("\194\160", " ")
-                    target = target or watchedName(text)
                     local odds = tonumber((text:gsub(",", "."):match("^%s*([%d%.]+)%s*%%%s*$")))
                     if odds then
                         if percent and percent ~= odds then ambiguous = true end
                         percent = odds
                     end
-                    if object.Name == "UnitName" or (not odds and text:find("%a")) then label = text end
+                    if object.Name == "UnitName" or (not label and not odds and text:find("%a")) then
+                        label = text
+                    end
                 end
             end
             if ambiguous or not label or not percent or percent < 0 or percent > 100 then
@@ -457,10 +463,15 @@ if game.PlaceId == LOBBY then
             end
             total += percent
             table.insert(entries, label .. " " .. tostring(percent) .. "%")
-            if target and percent > 0 then return target, true, target .. " " .. tostring(percent) .. "%" end
+            if math.abs(percent - TARGET_SUMMON_CHANCE) < 0.000001 then
+                slotName = label:match("^%s*(.-)%s*$")
+                local target = watchedName(slotName)
+                if target then return target, true, target .. " " .. tostring(percent) .. "%", slotName end
+            end
         end
         -- Basic Crate has seven reward cards, including the 0.01% slot.
-        return nil, ready and rows >= 7 and math.abs(total - 100) < 0.1, table.concat(entries, " | ")
+        return nil, ready and rows >= 7 and math.abs(total - 100) < 0.1 and slotName ~= nil,
+            table.concat(entries, " | "), slotName
     end
 
     local function cleanSurplus(storage, inventory, now)
@@ -554,9 +565,9 @@ if game.PlaceId == LOBBY then
         if summonHandled then return false end
         local frame = find(gui, "Main", "Main", "Summon", "SummonFrame")
         local button = find(frame, "Buttons", "Summon10Button")
-        local target, ready, details
+        local target, ready, details, slotName
         if button and visible(button, gui) then
-            target, ready, details = watchedSummonUnit(frame)
+            target, ready, details, slotName = watchedSummonUnit(frame)
         end
         -- A visible eligible rotation takes priority over a previously skipped milestone.
         if coins < COIN_GOAL or (not summonSpending and coins < summonGoal and not target) then return false end
@@ -575,8 +586,16 @@ if game.PlaceId == LOBBY then
             end
             if (roll.attempts or 0) < 3 and now >= (roll.nextEntry or 0) then
                 roll.attempts = (roll.attempts or 0) + 1
-                roll.nextEntry = now + 5
-                character:PivotTo(zone:GetPivot() + Vector3.new(0, 2, 0))
+                roll.nextEntry = now + 8
+                local entry = roll
+                local center = zone:GetPivot()
+                local size = zone:IsA("Model") and zone:GetExtentsSize() or zone.Size
+                character:PivotTo(center * CFrame.new(size.X / 2 + 10, 2, 0))
+                task.delay(1, function()
+                    if alive and roll == entry and player.Character == character and character.Parent then
+                        character:PivotTo(center + Vector3.new(0, 2, 0))
+                    end
+                end)
             end
             roll.poolSeenAt = nil
             status.Text = now - roll.arrivedAt >= 20 and "Open the Summon panel to continue."
@@ -588,7 +607,7 @@ if game.PlaceId == LOBBY then
             return true
         end
 
-        if ready == nil then target, ready, details = watchedSummonUnit(frame) end
+        if ready == nil then target, ready, details, slotName = watchedSummonUnit(frame) end
         if not ready then
             roll.poolSeenAt = nil
             status.Text = SUMMON_BUILD .. " | Cannot read full Summon rotation. Check Delta console."
@@ -605,12 +624,14 @@ if game.PlaceId == LOBBY then
                 return true
             end
             advanceSummonGoal(coins)
+            skippedSummon = slotName
             warn("[CTD] Summon checked: " .. details .. " | Next check at " .. tostring(summonGoal) .. " Coin")
-            status.Text = ("%s | No tracked unit. Next check %d Coin."):format(SUMMON_BUILD, summonGoal)
+            status.Text = ("0.01%%: %s | Not on list. Next check %d Coin."):format(slotName, summonGoal)
             roll, env.CTDToiletCitySummon = nil, nil
             return false
         end
         roll.before, roll.sentAt, roll.spending = coins, now, true
+        skippedSummon = false
         summonSpending = true
         status.Text = SUMMON_BUILD .. " | Rolling x10 | " .. details
         warn(("[CTD] %s | Coins %d | Basic Crate x10 | %s"):format(SUMMON_BUILD, coins, details))
@@ -740,7 +761,8 @@ if game.PlaceId == LOBBY then
             local coins = profile and profile.Money
             local balance = type(coins) == "number" and coins >= 0 and coins < summonGoal
                 and ("%d/%d Coin | "):format(math.floor(coins), summonGoal) or ""
-            status.Text = balance .. "Joining Toilet City " .. mode .. "..."
+            local reason = skippedSummon and ("0.01% " .. skippedSummon .. " not on list | ") or ""
+            status.Text = reason .. balance .. "Joining Toilet City " .. mode .. "..."
         else
             status.Text = "No empty Toilet City elevator"
         end
